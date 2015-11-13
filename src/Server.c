@@ -1,4 +1,5 @@
 #include "Server.h"
+#include <stdio.h>
 
 #define BACKLOG_SIZE 50
 
@@ -72,16 +73,36 @@ void Server_start(Server *_this, uv_loop_t *loop) {
 	uv_tcp_init(loop, &_this->server);
 	uv_tcp_bind(&_this->server, (const struct sockaddr *)&_this->addr, 0);
 	int r = uv_listen((uv_stream_t *)&server, BACKLOG_SIZE, realConnectionHandler);
+	_this->server.data = _this;
 	if(!r) {
-		fprintf(stderr, "Nem sikerült a várakozás a kapcsolatra.\n");
+		fprintf(stderr, "Failed to listen()\n");
 	}
 }
 
 static void realConnectionHandler(uv_stream_t *server, int status) {
-	// TODO
+	Server *_this = (Server *)server->data;
+	if(status < 0) {
+		fprintf(stderr, "New connection error: %s\n", uv_strerror(status));
+		return;
+	}
+
+	uv_tcp_t *client = (uv_tcp_t *)malloc(sizeof(uv_tcp_t));
+	if(!client) {
+		fprintf(stderr, "malloc error\n");
+		return;
+	}
+	uv_tcp_init(_this->loop, client);
+	if(uv_accept(&_this->server, (uv_stream_t *)client) == 0) {
+		if(_this->onConnection)
+			_this->onConnection(client);
+	}
+	else {
+		uv_close((uv_handle_t *)client, NULL);
+		free(client);
+	}
 }
 
 void Server_stop(Server *_this) {
-	// TODO: remove our handle from _this->loop
+	uv_close((uv_handle_t *)_this->server, NULL);
 	_this->loop = NULL;
 }

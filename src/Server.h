@@ -12,7 +12,7 @@ struct Server_vtable {
 };
 
 // TODO: a típus esetleges finomhangolása
-typedef void (*Server_connectionHandler)(void *);
+typedef void (*Server_connectionHandler)(uv_tcp_t *);
 
 struct Server {
 	Server_vtable *vtbl;
