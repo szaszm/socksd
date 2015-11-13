@@ -16,6 +16,7 @@ int main(void) {
 	writeString((uv_stream_t*)&stdout_pipe, "Kilépés...\n");
 
 	uv_run(loop, UV_RUN_DEFAULT);
+
 	uv_loop_close(loop);
 	return 0;
 }
