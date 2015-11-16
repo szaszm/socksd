@@ -3,6 +3,7 @@
 export CC="clang -fcolor-diagnostics -Qunused-arguments"
 export CXX="clang++ -fcolor-diagnostics -Qunused-arguments"
 export CCACHE_DIR="../../../cache"
+CONFIG=Debug
 
 function generate {
 	echo Generating ninja project files...
@@ -22,7 +23,7 @@ function build {
 	then
 		generate
 	fi
-	pushd out/Debug &>/dev/null
+	pushd out/$CONFIG &>/dev/null
 
 	echo Building...
 	ninja -v
@@ -30,13 +31,13 @@ function build {
 }
 
 function run {
-	pushd out/Debug &>/dev/null
+	pushd out/$CONFIG &>/dev/null
 	./socksd
 	popd &>/dev/null
 }
 
 function clean {
-	pushd out/Default &>/dev/null
+	pushd out/Debug &>/dev/null
 	ninja -t clean
 	popd &>/dev/null
 }
@@ -45,7 +46,7 @@ function test {
 	export PATH="/usr/lib/ccache/bin:$PATH"
 	export CCACHE_DIR="../../../cache"
 
-	pushd out/Default &>/dev/null
+	pushd out/$CONFIG &>/dev/null
 	ninja tests && \
 	./tests
 	popd &>/dev/null

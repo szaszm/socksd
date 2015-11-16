@@ -10,7 +10,7 @@
                 'src/main.c'
             ],
             'libraries': [
-                '-luv',
+                #'-luv',
             ],
             'configurations': {
                 'Debug':{},
