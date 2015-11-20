@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #define BACKLOG 50
 
@@ -16,6 +17,8 @@
 
 // http://stackoverflow.com/questions/3599160/unused-parameter-warnings-in-c-code
 #define UNUSED(x) (void)(x)
+
+#define HANDLE_OP continue
 
 
 enum SOCKS_STATE { STATE_INITIAL_WAIT, STATE_REQUEST_WAIT, STATE_PROXIED };
@@ -88,17 +91,20 @@ struct pollfd *getPollFds(int listener_fd, struct Client *clients, size_t n_clie
 	return res;
 }
 
-void Client_close(struct Client **clients, size_t *clients_len, size_t index);
+void Client_close(struct Client *client);
 int Client_handleActivity(struct Client *);
 int Client_handleRemoteActivity(struct Client *);
 int Client_handleInitialMessage(struct Client *);
 int Client_handleSocks4Request(struct Client *);
-int Client_sendSocks4RequestReply(struct Client *client, int granted);
+int Client_sendSocks4RequestReply(const struct Client *client, int granted);
 int Client_startForwarding(struct Client *client);
 int Client_handleSocks5Request(struct Client *);
 int Client_handleRequestMessage(struct Client *);
-int Client_forward(struct Client *);
-int Client_backward(struct Client *);
+int Client_forward(const struct Client *);
+int Client_backward(const struct Client *);
+void Client_debugPrintInfo(const struct Client *);
+
+void Client_filterClosed(struct Client **clients, size_t *n_clients);
 void print_addrinfo(const struct addrinfo *);
 
 /**
@@ -178,6 +184,7 @@ int main(void) {
 	while(1) {
 		size_t fds_len;
 		if(fds) { free(fds); fds = NULL; }
+		Client_filterClosed(&clients, &clients_len);
 		fds = getPollFds(srv, clients, clients_len, &fds_len);
 		res = poll(fds, fds_len, -1);
 		if(res == -1) { perror("poll"); continue; }
@@ -187,8 +194,8 @@ int main(void) {
 #endif
 		nfds_t i;
 		for(i = 0; i < fds_len; ++i) {
-#ifdef DEBUG
 			if(fds[i].revents == 0) continue;
+#ifdef DEBUG
 			printf("events: ");
 			if(fds[i].revents & POLLHUP) printf("POLLHUP ");
 			if(fds[i].revents & POLLERR) printf("POLLERR ");
@@ -202,24 +209,24 @@ int main(void) {
 				struct Client *c = getClientByFd(clients, clients_len, fds[i].fd);
 				if(!c) {
 					printf("Client already closed.\n");
-					continue;
+					HANDLE_OP;
 				}
 				size_t index = c - clients;
-				Client_close(&clients, &clients_len, index);
-				continue;
+				Client_close(&clients[index]);
+				HANDLE_OP;
 			}
 			if(!(fds[i].revents & POLLIN)) {
 				fds[i].revents = 0;
-				continue;
+				HANDLE_OP;
 			}
 			if(fds[i].fd == srv) {
 				res = accept(srv, NULL, NULL);
-				if(res == -1) continue;
+				if(res == -1) HANDLE_OP;
 				printf("accepted connection.\n");
 
 				struct Client *newclients = (struct Client *)realloc(clients, ++clients_len * sizeof(struct Client));
 				if(!newclients) {
-					perror("realloc");
+					perror("realloc@mainLoop");
 					size_t j;
 					for(j = 0; j < clients_len; ++j) {
 						if(clients[j].client_fd) close(clients[j].client_fd);
@@ -236,15 +243,15 @@ int main(void) {
 				struct Client *c = getClientByFd(clients, clients_len, fds[i].fd);
 				if(!c) {
 					printf("Client already closed.\n");
-					continue;
+					HANDLE_OP;
 				}
 				int res[2] = {0,0};
 				if(c->client_fd == fds[i].fd) res[0] = Client_handleActivity(c);
 				if(c->remote_fd == fds[i].fd) res[1] = Client_handleRemoteActivity(c);
 				if(res[0] || res[1]) 
 				{
-					Client_close(&clients, &clients_len, i);
-					continue;
+					Client_close(c);
+					HANDLE_OP;
 				}
 			}
 		}
@@ -282,7 +289,7 @@ int Client_handleInitialMessage(struct Client *client) {
 		return 1;
 	}
 	client->version = version;
-	printf("client version: %hhu\n", version);
+	printf("v%hhu ", version);
 	switch(version) {
 		case 4: return Client_handleSocks4Request(client);
 		case 5: return Client_handleSocks5Request(client);
@@ -309,7 +316,7 @@ int Client_handleSocks4Request(struct Client *client) {
 	if(ntohl(addr->sin_addr.s_addr) == 1) {
 		// Socks4a DNS
 		char *dsthost = readString(client->client_fd);
-		printf("destination host: %s\n", dsthost);
+		printf("LOOKUP %s\n", dsthost);
 		if(nslookup((struct sockaddr *)addr, dsthost)) {
 			fprintf(stderr, "name lookup failed.\n");
 			free(dsthost);
@@ -322,7 +329,7 @@ int Client_handleSocks4Request(struct Client *client) {
 	char addrstr[INET_ADDRSTRLEN];
 	inet_ntop(client->dst.ss_family, &addr->sin_addr.s_addr, addrstr, sizeof(struct sockaddr_in));
 	unsigned short port = ntohs(addr->sin_port);
-	printf("destination: %s:%hu\n", addrstr, port);
+	printf("CONNECT %s:%hu\n", addrstr, port);
 
 	if(req != REQUEST_CONNECT) {
 		Client_sendSocks4RequestReply(client, 0);
@@ -332,7 +339,7 @@ int Client_handleSocks4Request(struct Client *client) {
 	return res || Client_startForwarding(client);
 }
 
-int Client_sendSocks4RequestReply(struct Client *client, int granted) {
+int Client_sendSocks4RequestReply(const struct Client *client, int granted) {
 	char buf[8];
 	memset(buf, 0, 8);
 	buf[1] = granted ? 90 : 91;
@@ -350,17 +357,19 @@ int Client_sendSocks4RequestReply(struct Client *client, int granted) {
 
 int Client_handleSocks5Request(struct Client *client) {
 	// TODO
+	printf("TODO: Client_handleSocks5Request\n");
 	UNUSED(client);
 	return 1;
 }
 
 int Client_handleRequestMessage(struct Client *client) {
 	// TODO
+	printf("TODO: Client_handleRequestMessage\n");
 	UNUSED(client);
 	return 0;
 }
 
-static int Client_directedForward(struct Client *client, int direction) {
+static int Client_directedForward(const struct Client *client, int direction) {
 	char buf[BUFSIZ];
 	int res;
 	int srcfd = (direction) ? client->client_fd : client->remote_fd;
@@ -377,12 +386,12 @@ static int Client_directedForward(struct Client *client, int direction) {
 	return res == -1;
 }
 
-int Client_forward(struct Client *client) {
+int Client_forward(const struct Client *client) {
 	return Client_directedForward(client, 1);
 }
 
 
-int Client_backward(struct Client *client) {
+int Client_backward(const struct Client *client) {
 	return Client_directedForward(client, 0);
 }
 
@@ -404,17 +413,45 @@ int Client_startForwarding(struct Client *client) {
 	return 0;
 }
 
-void Client_close(struct Client **clients, size_t *clients_len, size_t i) {
-	close((*clients)[i].client_fd);
-	if((*clients)[i].remote_fd)
-		close((*clients)[i].remote_fd);
-	size_t j;
-	for(j = i; j < *clients_len; ++j) {
-		(*clients)[i] = (*clients)[i+1];
+void Client_close(struct Client *client) {
+	int res = 0;
+	if(client->client_fd)
+		res = close(client->client_fd);
+	if(res == -1) {
+		fprintf(stderr, "close(%d): %s\n", client->client_fd, strerror(errno)); 
 	}
-	*clients = realloc(*clients, (*clients_len)*sizeof(struct Client));
-	(*clients_len)--;
+	else client->client_fd = 0;
+	if(client->remote_fd)
+		res = close(client->remote_fd);
+	if(res == -1) {
+		fprintf(stderr, "close(%d): %s\n", client->client_fd, strerror(errno));
+	}
+	else client->remote_fd = 0;
+#ifdef DEBUG
 	printf("connection closed.\n");
+#endif
+}
+
+void Client_filterClosed(struct Client **clientsptr, size_t *n_clientsptr) {
+	size_t i, offset = 0;
+	struct Client *clients = *clientsptr;
+	size_t n_clients = *n_clientsptr;
+	for(i = 0; i + offset < n_clients; ) {
+		if(clients[i+offset].client_fd == 0 && clients[i+offset].remote_fd == 0)  {
+			offset++;
+			continue;
+		}
+		clients[i] = clients[i+offset];
+		i++;
+	}
+	if(offset == 0) return;
+	struct Client *newptr = (struct Client *)realloc(clients, n_clients - offset);
+	if(newptr == NULL) {
+		perror("realloc@filterClosed");
+		exit(1);
+	}
+	*clientsptr = newptr;
+	*n_clientsptr -= offset;
 }
 
 void print_addrinfo(const struct addrinfo *res) {
@@ -470,7 +507,7 @@ char *readString(int fd) {
 	while((res = read(fd, &c, 1)) == 1 && c) {
 		char *newdstbuf = (char *)realloc(dstbuf, ++_read + 1);
 		if(!newdstbuf) {
-			perror("realloc");
+			perror("realloc@readString");
 			free(dstbuf);
 			return NULL;
 		}
@@ -508,4 +545,10 @@ int nslookup(struct sockaddr *dst, const char *name) {
 
 	freeaddrinfo(ai);
 	return 0;
+}
+
+void Client_debugPrintInfo(const struct Client *client) {
+	// TODO
+	printf("TODO: Client_debugPrintInfo\n");
+	UNUSED(client);
 }
