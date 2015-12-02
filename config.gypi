@@ -6,15 +6,18 @@
                 'cflags': [
                     '-Werror', '-g'
                 ],
+                'defines': [ 'DEBUG' ],
             },
             'Release': {
                 'cflags': [
                     '-O3'
                 ],
+                'defines': [ 'NDEBUG' ],
             },
         },
         'cflags': [
-            '-Wall', '-Wextra'
+            '-Wall', '-Wextra', '-std=c11'
         ],
+        'defines': [ '_POSIX_SOURCE' ],
     },
 }
