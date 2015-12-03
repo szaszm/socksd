@@ -10,9 +10,11 @@ struct Client {
 	int version;
 	enum SOCKS_STATE state;
 	struct sockaddr_storage dst;
+	const struct Logger *logger;
+	char socks5_method;
 };
 
-struct Client Client_init(int fd);
+struct Client Client_init(int fd, const struct Logger *);
 void Client_close(struct Client *);
 int Client_handleActivity(struct Client *);
 int Client_handleRemoteActivity(struct Client *);
@@ -20,8 +22,8 @@ int Client_handleInitialMessage(struct Client *);
 int Client_handleSocks4Request(struct Client *);
 int Client_sendSocks4RequestReply(const struct Client *, int granted);
 int Client_startForwarding(struct Client *client);
+int Client_handleSocks5MethodRequest(struct Client *);
 int Client_handleSocks5Request(struct Client *);
-int Client_handleRequestMessage(struct Client *);
 int Client_forward(const struct Client *);
 int Client_backward(const struct Client *);
 void Client_debugPrintInfo(const struct Client *);

@@ -3,9 +3,10 @@
 #include <errno.h> // errno
 #include <string.h> // strerror
 
-#ifndef ARRAY_LENGTH
-#define ARRAY_LENGTH(a) (sizeof(*(a))/sizeof(a))
+#ifdef ARRAY_LENGTH
+#undef ARRAY_LENGTH
 #endif
+#define ARRAY_LENGTH(a) (sizeof(a)/sizeof(*(a)))
 
 void LOGGER_FUNCTION_DEFAULT_STDERR(const char *domain, const char *message) {
 	fprintf(stderr, "%s: %s\n", domain, message);
@@ -38,13 +39,12 @@ void Logger_setMinLevel(struct Logger *_this, enum LogLevel level) {
 }
 
 void Logger_log(const struct Logger *_this, enum LogLevel level, const char *domain, const char *fmt, ...) {
-	if(level < _this->min_level || !_this->logger_functions[level]) return;
+	if(level > _this->min_level || !_this->logger_functions[level]) return;
 	va_list args;
 	va_start(args, fmt);
 	char message[256];
 	vsnprintf(message, sizeof(message), fmt, args);
 	va_end(args);
-	Logger_log(_this, level, domain, message);
 	_this->logger_functions[level](domain, message);
 }
 

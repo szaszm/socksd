@@ -148,7 +148,7 @@ int main(void) {
 					return 1;
 				}
 				ctx.clients = newclients;
-				newclients[ctx.n_clients-1] = Client_init(res);
+				newclients[ctx.n_clients-1] = Client_init(res, &ctx.logger);
 			} else {
 				// handle client connection
 				struct Client *c = getClientByFd(&ctx, fds[i].fd);
@@ -188,10 +188,10 @@ void Client_filterClosed(struct MainContext *ctx) {
 	if(offset == 0) return;
 	struct Client *newptr = (struct Client *)realloc(clients, (n_clients - offset)*sizeof(struct Client));
 	if(newptr == NULL && n_clients != offset) {
-		perror("realloc@filterClosed");
+		Logger_perror(&ctx->logger, LOG_LEVEL_ERROR, "realloc@Client_filterClosed");
 		exit(1);
 	} else if(n_clients == offset){
-		printf("no clients remaining.\n");
+		Logger_info(&ctx->logger, "Client_filterClosed", "no clients remaining.");
 	}
 
 	ctx->clients = newptr;

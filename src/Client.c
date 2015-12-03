@@ -1,4 +1,5 @@
 #include "Client.h"
+#include "Logger.h"
 
 #include <unistd.h>
 #include <arpa/inet.h> // struct sockaddr_in{,6}, inet_ntop
@@ -7,9 +8,6 @@
 #include <string.h> // memset
 #include <errno.h> // errno
 #include <netdb.h> // struct addrinfo, getaddrinfo, freeaddrinfo
-
-// http://stackoverflow.com/questions/3599160/unused-parameter-warnings-in-c-code
-#define UNUSED(x) (void)(x)
 
 #define REQUEST_CONNECT 1
 
@@ -34,12 +32,14 @@ static char *readString(int fd);
 static int nslookup(struct sockaddr *dst, const char *name);
 
 
-struct Client Client_init(int fd) {
+struct Client Client_init(int fd, const struct Logger *logger) {
 	struct Client res;
 	res.client_fd = fd;
 	res.remote_fd = 0;
 	res.version = 0;
 	res.state = STATE_INITIAL_WAIT;
+	res.logger = logger;
+	res.socks5_method = 0xff; // no method by default
 	return res;
 }
 
@@ -48,18 +48,18 @@ void Client_close(struct Client *client) {
 	if(client->client_fd)
 		res = close(client->client_fd);
 	if(res == -1) {
-		fprintf(stderr, "close(%d): %s\n", client->client_fd, strerror(errno)); 
+		//fprintf(stderr, "close(%d): %s\n", client->client_fd, strerror(errno)); 
+		Logger_warn(client->logger, "close@Client_close", "fd=%d %s", client->client_fd, strerror(errno));
 	}
 	else client->client_fd = 0;
 	if(client->remote_fd)
 		res = close(client->remote_fd);
 	if(res == -1) {
-		fprintf(stderr, "close(%d): %s\n", client->client_fd, strerror(errno));
+		//fprintf(stderr, "close(%d): %s\n", client->client_fd, strerror(errno));
+		Logger_warn(client->logger, "close@Client_close", "fd=%d %s", client->client_fd, strerror(errno));
 	}
 	else client->remote_fd = 0;
-#ifdef DEBUG
-	printf("connection closed.\n");
-#endif
+	Logger_debug(client->logger, "Client_close", "connection closed.");
 }
 
 int Client_handleActivity(struct Client *client) {
@@ -67,11 +67,11 @@ int Client_handleActivity(struct Client *client) {
 		case STATE_INITIAL_WAIT:
 			return Client_handleInitialMessage(client);
 		case STATE_REQUEST_WAIT:
-			return Client_handleRequestMessage(client);
+			return Client_handleSocks5Request(client);
 		case STATE_PROXIED:
 			return Client_forward(client);
 		default:
-			fprintf(stderr, "Invalid state.\n");
+			Logger_warn(client->logger, "Client_handleActivity", "Invalid state: %d", client->state);
 			return 1;
 	}
 }
@@ -89,10 +89,10 @@ int Client_handleInitialMessage(struct Client *client) {
 		return 1;
 	}
 	client->version = version;
-	printf("v%hhu ", version);
+	Logger_verbose(client->logger, "Client_handleInitialMessage", "client version: %hhu", version);
 	switch(version) {
 		case 4: return Client_handleSocks4Request(client);
-		case 5: return Client_handleSocks5Request(client);
+		case 5: return Client_handleSocks5MethodRequest(client);
 		default: return 1; // invalid version number, close connection
 	}
 	return 0;
@@ -102,7 +102,7 @@ int Client_handleSocks4Request(struct Client *client) {
 	char buf[7];
 	int res = readAll(client->client_fd, buf, 7);
 	if(res == -1) {
-		perror("read");
+		Logger_perror(client->logger, LOG_LEVEL_WARNING, "read@Client_handleSocks4Request");
 		return 1;
 	} else if(res == 0) {
 		return 1;
@@ -116,9 +116,10 @@ int Client_handleSocks4Request(struct Client *client) {
 	if(ntohl(addr->sin_addr.s_addr) == 1) {
 		// Socks4a DNS
 		char *dsthost = readString(client->client_fd);
-		printf("LOOKUP %s\n", dsthost);
+		if(!dsthost) Logger_perror(client->logger, LOG_LEVEL_WARNING, "readString@Client_handleSocks4Request");
+		Logger_verbose(client->logger, "Client_handleSocks4Request", "LOOKUP %s\n", dsthost);
 		if(nslookup((struct sockaddr *)addr, dsthost)) {
-			fprintf(stderr, "name lookup failed.\n");
+			Logger_info(client->logger, "Client_handleSocks4Request", "name lookup failed.");
 			free(dsthost);
 			return 1;
 		}
@@ -129,7 +130,7 @@ int Client_handleSocks4Request(struct Client *client) {
 	char addrstr[INET_ADDRSTRLEN];
 	inet_ntop(client->dst.ss_family, &addr->sin_addr.s_addr, addrstr, sizeof(struct sockaddr_in));
 	unsigned short port = ntohs(addr->sin_port);
-	printf("CONNECT %s:%hu\n", addrstr, port);
+	Logger_verbose(client->logger, "Client_handleSocks4Request", "CONNECT %s:%hu\n", addrstr, port);
 
 	if(req != REQUEST_CONNECT) {
 		Client_sendSocks4RequestReply(client, 0);
@@ -145,46 +146,111 @@ int Client_sendSocks4RequestReply(const struct Client *client, int granted) {
 	buf[1] = granted ? 90 : 91;
 	int res = sendAll(client->client_fd, buf, 8);
 	if(res == -1) {
-		perror("send");
+		Logger_perror(client->logger, LOG_LEVEL_WARNING, "send@Client_sendSocks4RequestReply");
 		return 1;
 	} else if(res < 8) {
-		fprintf(stderr, "Failed to send all data, closing connection.\n");
+		Logger_warn(client->logger, "Client_sendSocks4RequestReply", "Failed to send all data, closing connection.");
 		return 1;
 	}
-	printf("Request %s.\n", granted ? "granted" : "denied");
+	Logger_verbose(client->logger, "Client_sendSocks4RequestReply", "Request %s.", granted ? "granted" : "denied");
 	return 0;
 }
 
 int Client_startForwarding(struct Client *client) {
 	client->remote_fd = socket(client->dst.ss_family, SOCK_STREAM, 0);
 	if(client->remote_fd == -1) {
-		perror("socket");
+		Logger_perror(client->logger, LOG_LEVEL_WARNING, "socket");
 		return 1;
 	}
 	socklen_t len = (client->dst.ss_family == AF_INET6) ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
 	int res = connect(client->remote_fd, (struct sockaddr *)&client->dst, len);
 	if(res == -1) {
-		perror("connect");
+		Logger_perror(client->logger, LOG_LEVEL_WARNING, "connect");
 		return 1;
 	}
 	client->state = STATE_PROXIED;
-	printf("connected to remote.\n");
+	Logger_verbose(client->logger, "Client_startForwading", "connected to remote.");
 
 	return 0;
 }
 
-int Client_handleSocks5Request(struct Client *client) {
+static int Client_selectSocks5Method(struct Client *_this, unsigned char method_id) {
+	unsigned char response[2];
+	response[0] = 5;
+	response[1] = _this->socks5_method = method_id;
+	int res = sendAll(_this->client_fd, response, 2);
+	if(res == -1) {
+		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "sendAll@Client_selectSocks5Method");
+		return 1;
+	} else if(res != 2) {
+		Logger_warn(_this->logger, "Client_selectSocks5Method", "Couldn't select method, closing connection.");
+		return 1;
+	}
+	_this->state = STATE_REQUEST_WAIT;
+	Logger_verbose(_this->logger, "Client_selectSocks5Method", "Client selected method %hhx. Entering request wait state.", method_id);
+	return 0;
+}
+
+int Client_handleSocks5MethodRequest(struct Client *_this) {
+	unsigned char n_methods;
+	int res = read(_this->client_fd, &n_methods, 1);
+	if(res < 1) {
+		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read@Client_handleSocks5MethodRequest");
+		return 1;
+	}
+	if(n_methods < 1) {
+		Logger_warn(_this->logger, "Client_handleSocks5MethodRequest", "Client doesn't support any methods");
+		Client_selectSocks5Method(_this, 0xff); // 0xff: no acceptable methods
+		return 1;
+	}
+
+	unsigned char methods[n_methods];
+	res = readAll(_this->client_fd, methods, n_methods);
+	if(res != n_methods) {
+		Logger_warn(_this->logger, "Client_handleSocks5MethodRequest", "Couldn't read method list, closing connection.");
+		return 1;
+	}
+	
+	int i;
+	for(i = 0; i < n_methods; ++i) {
+		if(methods[i] == 0x00) break; // If client supports no auth method, then select it
+	}
+
+	if(i == n_methods) {
+		// No acceptable methods found
+		Client_selectSocks5Method(_this, 0xff); // 0xff: no acceptable methods
+		return 1;
+	}
+
+	// If we found an acceptable method, then select it
+	return Client_selectSocks5Method(_this, methods[i]);
+}
+
+//static int Client_sendSocks5RequestReply(struct Client *_this, 
+
+int Client_handleSocks5Request(struct Client *_this) {
+	char buf1[4];
+	int res = readAll(_this->client_fd, buf1, 4);
+	if(res == -1) {
+		Logger_perror(_this->logger, LOG_LEVEL_WARN, "readAll@handleSocks5Request");
+		return 1;
+	} else if(res != 4) {
+		Logger_warn(_this->logger, "Client_handleSocks5Request", "Couldn't read SOCKS5 request, closing connection.");
+		return 1;
+	}
+	if(buf1[0] != 0x05) { // Version 5
+		Logger_warn(_this->logger, "Client_handleSocks5Request", "Client sent a request with an invalid version number. Closing connection.");
+		return 1;
+	}
+	if(buf1[1] != 0x01) { // buf[1]: command, 0x01: CONNECT command
+		Logger_info(_this->logger, "Client_handleSocks5Request", 
+				"The client requested an unsupported command: 0x%hhx. Closing connection.", buf1[1]);
+		return 1;
+	}
+
 	// TODO
-	printf("TODO: Client_handleSocks5Request\n");
-	UNUSED(client);
+	Logger_warn(_this->logger, "Client_handleSocks5Request", "INCOMPLETE IMPLEMENTATION");
 	return 1;
-}
-
-int Client_handleRequestMessage(struct Client *client) {
-	// TODO
-	printf("TODO: Client_handleRequestMessage\n");
-	UNUSED(client);
-	return 0;
 }
 
 static int Client_directedForward(const struct Client *client, int direction) {
@@ -194,10 +260,10 @@ static int Client_directedForward(const struct Client *client, int direction) {
 	int dstfd = (direction) ? client->remote_fd : client->client_fd;
 	res = read(srcfd, buf, BUFSIZ);
 	if(res == -1) {
-		perror("read");
+		Logger_perror(client->logger, LOG_LEVEL_WARNING, "read@Client_directedForward");
 		return 1;
 	} else if(res == 0) {
-		printf("%s closed connection.\n", direction ? "client" : "remote");
+		Logger_verbose(client->logger, "Client_directedForward", "%s closed connection.\n", direction ? "client" : "remote");
 		return 1;
 	}
 	res = sendAll(dstfd, buf, res);
@@ -215,8 +281,7 @@ int Client_backward(const struct Client *client) {
 
 void Client_debugPrintInfo(const struct Client *client) {
 	// TODO
-	printf("TODO: Client_debugPrintInfo\n");
-	UNUSED(client);
+	Logger_warn(client->logger, "Client_debugPrintInfo", "TODO: Client_debugPrintInfo\n");
 }
 
 static int sendAll(int fd, void *buf, size_t len) {
@@ -243,7 +308,6 @@ static char *readString(int fd) {
 	while((res = read(fd, &c, 1)) == 1 && c) {
 		char *newdstbuf = (char *)realloc(dstbuf, ++_read + 1);
 		if(!newdstbuf) {
-			perror("realloc@readString");
 			free(dstbuf);
 			return NULL;
 		}
@@ -251,7 +315,6 @@ static char *readString(int fd) {
 		dstbuf[_read-1] = c;
 	}
 	if(res == -1) {
-		perror("read");
 		free(dstbuf);
 		return NULL;
 	}
