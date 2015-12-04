@@ -3,7 +3,7 @@
 export CC="clang -fcolor-diagnostics -Qunused-arguments"
 export CXX="clang++ -fcolor-diagnostics -Qunused-arguments"
 export CCACHE_DIR="../../../cache"
-CONFIG=Release
+CONFIG=Debug
 
 function generate {
 	echo Generating ninja project files...

@@ -1,7 +1,7 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
-enum LogLevel { LOG_LEVEL_QUIET = 0, LOG_LEVEL_ERROR, LOG_LEVEL_WARNING, LOG_LEVEL_INFO, LOG_LEVEL_VERBOSE, LOG_LEVEL_DEBUG };
+enum LogLevel { LOG_LEVEL_ALL = -1, LOG_LEVEL_QUIET = 0, LOG_LEVEL_ERROR, LOG_LEVEL_WARNING, LOG_LEVEL_INFO, LOG_LEVEL_VERBOSE, LOG_LEVEL_DEBUG };
 struct Logger {
 	void (*logger_functions[6])(void *data, const char *domain, const char *message);
 	void *data[6];

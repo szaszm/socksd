@@ -44,8 +44,16 @@ struct Logger Logger_init(enum LogLevel min_level) {
 }
 
 void Logger_setLoggerFunction(struct Logger *_this, enum LogLevel level, void (*fn)(void *,const char *,const char *), void *data) {
-	_this->logger_functions[level] = fn;
-	_this->data[level] = data;
+	if(level == LOG_LEVEL_ALL) {
+		int i;
+		for(i = 0; i < 6; ++i) {
+			_this->logger_functions[i] = fn;
+			_this->data[i] = data;
+		}
+	} else {
+		_this->logger_functions[level] = fn;
+		_this->data[level] = data;
+	}
 }
 
 void Logger_setMinLevel(struct Logger *_this, enum LogLevel level) {

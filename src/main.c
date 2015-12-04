@@ -8,6 +8,7 @@
 #include <poll.h> // poll, struct pollfd
 #include <string.h> // memset
 #include <getopt.h> // getopt, getopt_long, struct option
+#include <signal.h> // sigaction
 
 #include <sys/types.h>
 #include <sys/socket.h> // socket, bind, listen, accept
@@ -17,6 +18,9 @@
 #define BACKLOG 50
 #define ARRAY_LENGTH(a) (sizeof(*(a))/sizeof(a))
 
+// http://stackoverflow.com/questions/3599160/unused-parameter-warnings-in-c-code
+#define UNUSED(x) (void)(x)
+
 struct MainContext {
 	struct Logger logger;
 	char bindhost[100];
@@ -25,6 +29,7 @@ struct MainContext {
 	size_t n_clients;
 	int listener_fd;
 	int af;
+	FILE *logfile;
 };
 
 //void Client_filterClosed(struct Client **clients, size_t *n_clients);
@@ -38,6 +43,10 @@ void str_addrinfo(char *buf, size_t buflen, const struct addrinfo *);
 
 void getOptions(struct MainContext *ctx, int argc, char **argv);
 void printUsage(const struct Logger *, const char *program_name);
+int setSignalHandler(int signal, void (*handler)(int));
+void onExitSignal(int signum);
+
+static int terminate = 0; // signal terminator var
 
 int main(int argc, char *argv[]) {
 	struct MainContext ctx = {
@@ -47,10 +56,19 @@ int main(int argc, char *argv[]) {
 		.clients = NULL,
 		.n_clients = 0,
 		.listener_fd = -1,
-		.af = AF_UNSPEC
+		.af = AF_UNSPEC,
+		.logfile = NULL
 	};
 
+	if(setSignalHandler(SIGINT, onExitSignal) == -1 
+			|| setSignalHandler(SIGTERM, onExitSignal) == -1 
+			|| setSignalHandler(SIGQUIT, onExitSignal) == -1) {
+		Logger_perror(&ctx.logger, LOG_LEVEL_WARNING, "setSignalHandler");
+	}
 	getOptions(&ctx, argc, argv);
+	if(ctx.logfile) {
+		Logger_setLoggerFunction(&ctx.logger, LOG_LEVEL_ALL, LOGGER_FUNCTION_LOG_TO_FILE, ctx.logfile);
+	}
 
 	struct addrinfo hints;
 	memset(&hints, 0, sizeof(hints));
@@ -102,7 +120,7 @@ int main(int argc, char *argv[]) {
 
 	struct pollfd *fds = NULL;
 
-	while(1) {
+	while(!terminate) {
 		size_t fds_len;
 		if(fds) { free(fds); fds = NULL; }
 		Client_filterClosed(&ctx);
@@ -173,8 +191,10 @@ int main(int argc, char *argv[]) {
 			}
 		}
 	}
+	Logger_info(&ctx.logger, "main", "main loop ended, cleaning up before exiting.");
 	if(fds) { free(fds); fds = NULL; }
 	free(ctx.clients);
+	if(ctx.logfile) fclose(ctx.logfile);
 
 	return 0;
 }
@@ -294,13 +314,14 @@ void getOptions(struct MainContext *ctx, int argc, char **argv) {
 		{"ipv4", no_argument, NULL, '4' },
 		{"ipv6", no_argument, NULL, '6' },
 		{"log-level", required_argument, NULL, 'l' },
+		{"log-file", required_argument, NULL, 'f' },
 		{"help", no_argument, NULL, 'h' },
 		{NULL, 0, NULL, 0}
 	};
 	int c;
 	while(1) {
 		int option_index = 0;
-		c = getopt_long(argc, argv, "b:p:46l:h", longopts, &option_index);
+		c = getopt_long(argc, argv, "b:p:46l:f:h", longopts, &option_index);
 		if(c == -1) break;
 
 		switch(c) {
@@ -321,6 +342,12 @@ void getOptions(struct MainContext *ctx, int argc, char **argv) {
 			case 'l':
 				sscanf(optarg, "%d", &c);
 				Logger_setMinLevel(&ctx->logger, c);
+				break;
+			case 'f':
+				ctx->logfile = fopen(optarg, "a");
+				if(ctx->logfile == NULL) {
+					Logger_warn(&ctx->logger, "getOptions", "Failed to open logfile");
+				}
 				break;
 			case 'h':
 				printUsage(&ctx->logger, argv[0]);
@@ -347,8 +374,21 @@ void printUsage(const struct Logger *logger, const char *program_name) {
 		"                           3: információk\n"
 		"                           4: több információ (alapértelmezés)\n"
 		"                           5: debug \n"
+		"    -f, --log-file FILE  A logolás ebbe a fájlba történik. (alapértelmezés: hibák, figyelmeztetések - stderr, más - stdout)\n"
 		"    -h, --help           Segítség megjelenítése\n"
 		;
 
 	Logger_info(logger, "usage", usagestr, program_name ? program_name : "./socksd");
+}
+
+int setSignalHandler(int signum, void (*handler)(int)) {
+	struct sigaction act;
+	memset(&act, 0, sizeof(sigaction));
+	act.sa_handler = handler;
+	return sigaction(signum, &act, NULL);
+}
+
+void onExitSignal(int signum) {
+	UNUSED(signum);
+	terminate = 1;
 }

@@ -10,7 +10,7 @@
             },
             'Release': {
                 'cflags': [
-                    '-Os'
+                    '-O3'
                 ],
                 'defines': [ 'NDEBUG' ],
             },
