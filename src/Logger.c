@@ -8,6 +8,8 @@
 #endif
 #define ARRAY_LENGTH(a) (sizeof(a)/sizeof(*(a)))
 
+#define MSG_MAXLEN 255
+
 void LOGGER_FUNCTION_DEFAULT_STDERR(const char *domain, const char *message) {
 	fprintf(stderr, "%s: %s\n", domain, message);
 }
@@ -42,7 +44,7 @@ void Logger_log(const struct Logger *_this, enum LogLevel level, const char *dom
 	if(level > _this->min_level || !_this->logger_functions[level]) return;
 	va_list args;
 	va_start(args, fmt);
-	char message[256];
+	char message[MSG_MAXLEN + 1];
 	vsnprintf(message, sizeof(message), fmt, args);
 	va_end(args);
 	_this->logger_functions[level](domain, message);

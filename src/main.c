@@ -37,7 +37,8 @@ void str_addrinfo(char *buf, size_t buflen, const struct addrinfo *);
 
 int main(void) {
 	struct MainContext ctx = {
-		.logger = Logger_init(LOG_LEVEL_DEBUG),
+		//.logger = Logger_init(LOG_LEVEL_DEBUG),
+		.logger = Logger_init(LOG_LEVEL_VERBOSE),
 		.bindhost = "localhost",
 		.bindport = "1080",
 		.clients = NULL,
@@ -58,7 +59,7 @@ int main(void) {
 		Logger_error(&ctx.logger, "getaddrinfo", gai_strerror(status));
 		return 1;
 	} else {
-		char aistrbuf[30];
+		char aistrbuf[80];
 		str_addrinfo(aistrbuf, sizeof(aistrbuf), srvinfo);
 		Logger_verbose(&ctx.logger, "getaddrinfo", aistrbuf);
 	}
@@ -133,7 +134,7 @@ int main(void) {
 			if(fds[i].fd == ctx.listener_fd) {
 				res = accept(ctx.listener_fd, NULL, NULL);
 				if(res == -1) HANDLE_OP;
-				Logger_verbose(&ctx.logger, "event_loop", "accepted connection.\n");
+				Logger_verbose(&ctx.logger, "event_loop", "accepted connection.");
 
 				struct Client *newclients = (struct Client *)realloc(ctx.clients, ++ctx.n_clients * sizeof(struct Client));
 				if(!newclients) {

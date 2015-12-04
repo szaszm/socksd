@@ -11,6 +11,12 @@
 
 #define REQUEST_CONNECT 1
 
+static const char *const SOCKS5_METHODS[] = {
+	"CONNECT",
+	"BIND",
+	"UDP_ASSOCIATE"
+};
+
 /**
  * Keeps reading fd until len bytes are read
  * @param int fd The file descriptor to read from
@@ -29,7 +35,7 @@ static int sendAll(int fd, void *buf, size_t buflen);
 
 static char *readString(int fd);
 
-static int nslookup(struct sockaddr *dst, const char *name);
+static int nslookup(struct sockaddr *dst, const char *name, const struct Logger *);
 
 
 struct Client Client_init(int fd, const struct Logger *logger) {
@@ -48,14 +54,14 @@ void Client_close(struct Client *client) {
 	if(client->client_fd)
 		res = close(client->client_fd);
 	if(res == -1) {
-		//fprintf(stderr, "close(%d): %s\n", client->client_fd, strerror(errno)); 
+		//fprintf(stderr, "close(%d): %s", client->client_fd, strerror(errno)); 
 		Logger_warn(client->logger, "close@Client_close", "fd=%d %s", client->client_fd, strerror(errno));
 	}
 	else client->client_fd = 0;
 	if(client->remote_fd)
 		res = close(client->remote_fd);
 	if(res == -1) {
-		//fprintf(stderr, "close(%d): %s\n", client->client_fd, strerror(errno));
+		//fprintf(stderr, "close(%d): %s", client->client_fd, strerror(errno));
 		Logger_warn(client->logger, "close@Client_close", "fd=%d %s", client->client_fd, strerror(errno));
 	}
 	else client->remote_fd = 0;
@@ -117,8 +123,8 @@ int Client_handleSocks4Request(struct Client *client) {
 		// Socks4a DNS
 		char *dsthost = readString(client->client_fd);
 		if(!dsthost) Logger_perror(client->logger, LOG_LEVEL_WARNING, "readString@Client_handleSocks4Request");
-		Logger_verbose(client->logger, "Client_handleSocks4Request", "LOOKUP %s\n", dsthost);
-		if(nslookup((struct sockaddr *)addr, dsthost)) {
+		Logger_verbose(client->logger, "Client_handleSocks4Request", "LOOKUP %s", dsthost);
+		if(nslookup((struct sockaddr *)addr, dsthost, client->logger)) {
 			Logger_info(client->logger, "Client_handleSocks4Request", "name lookup failed.");
 			free(dsthost);
 			return 1;
@@ -127,17 +133,20 @@ int Client_handleSocks4Request(struct Client *client) {
 	}
 	memcpy(&addr->sin_port, &buf[1], sizeof(addr->sin_port));
 
-	char addrstr[INET_ADDRSTRLEN];
-	inet_ntop(client->dst.ss_family, &addr->sin_addr.s_addr, addrstr, sizeof(struct sockaddr_in));
+	char addrstr[INET6_ADDRSTRLEN];
+	inet_ntop(client->dst.ss_family, (client->dst.ss_family == AF_INET6) 
+			? (void *)&((struct sockaddr_in6 *)&client->dst)->sin6_addr.s6_addr 
+			: (void *)&addr->sin_addr.s_addr, 
+			addrstr, INET6_ADDRSTRLEN);
 	unsigned short port = ntohs(addr->sin_port);
-	Logger_verbose(client->logger, "Client_handleSocks4Request", "CONNECT %s:%hu\n", addrstr, port);
+	Logger_verbose(client->logger, "Client_handleSocks4Request", "CONNECT %s:%hu", addrstr, port);
 
 	if(req != REQUEST_CONNECT) {
 		Client_sendSocks4RequestReply(client, 0);
 		return 1;
 	}
-	res = Client_sendSocks4RequestReply(client, 1);
-	return res || Client_startForwarding(client);
+	res = Client_startForwarding(client);
+	return res || Client_sendSocks4RequestReply(client, 1);
 }
 
 int Client_sendSocks4RequestReply(const struct Client *client, int granted) {
@@ -187,7 +196,7 @@ static int Client_selectSocks5Method(struct Client *_this, unsigned char method_
 		return 1;
 	}
 	_this->state = STATE_REQUEST_WAIT;
-	Logger_verbose(_this->logger, "Client_selectSocks5Method", "Client selected method %hhx. Entering request wait state.", method_id);
+	Logger_verbose(_this->logger, "Client_selectSocks5Method", "Client selected method %s (%hhx).", SOCKS5_METHODS[method_id], method_id);
 	return 0;
 }
 
@@ -226,31 +235,162 @@ int Client_handleSocks5MethodRequest(struct Client *_this) {
 	return Client_selectSocks5Method(_this, methods[i]);
 }
 
-//static int Client_sendSocks5RequestReply(struct Client *_this, 
+static int Client_sendSocks5RequestReply(struct Client *_this, unsigned char reply, struct sockaddr *bnd) {
+	int addrlen = (bnd && bnd->sa_family == AF_INET6) ? 16 : 4;
+	unsigned char replybuf[6 + addrlen];
+	memset(replybuf, 0, sizeof(replybuf));
+	replybuf[0] = 0x05; // version
+	replybuf[1] = reply;
+	replybuf[3] = (bnd && bnd->sa_family == AF_INET6) ? 0x04 : 0x01;
+	if(bnd) {
+		if(bnd->sa_family == AF_INET6) {
+			struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)bnd;
+			memcpy(replybuf + 4, &sin6->sin6_addr.s6_addr, addrlen);
+			memcpy(replybuf + 4 + addrlen, &sin6->sin6_port, 2);
+		} else {
+			struct sockaddr_in *sin = (struct sockaddr_in *)bnd;
+			memcpy(replybuf + 4, &sin->sin_addr.s_addr, addrlen);
+			memcpy(replybuf + 4 + addrlen, &sin->sin_port, 2);
+		}
+	}
+
+	return sendAll(_this->client_fd, replybuf, 6 + addrlen) != (6 + addrlen);
+}
+
+static int Client_readSocks5RequestAddress(struct Client *_this) {
+	unsigned char atyp;
+	int res = read(_this->client_fd, &atyp, 1);
+	if(res == -1) {
+		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read(atyp)@Client_readSocks5RequestAddress");
+		return 1;
+	} else if(res != 1) {
+		Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't read destination address type");
+		return 1;
+	}
+
+	if(atyp == 0x01) { // 0x01: IPv4 address
+		struct sockaddr_in *sin = (struct sockaddr_in *)&_this->dst;
+		sin->sin_family = AF_INET;
+		res = read(_this->client_fd, &sin->sin_addr.s_addr, 4);
+		if(res == -1) {
+			Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read(v4addr)@Client_readSocks5RequestAddress");
+			return 1;
+		} else if(res != 4) {
+			Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't read destination IPv4 address");
+			return 1;
+		}
+	} else if(atyp == 0x03) { // 0x03: Domain name
+		unsigned char len;
+		res = read(_this->client_fd, &len, 1);
+		if(res == -1) {
+			Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read(dnslen)@Client_readSocks5RequestAddress");
+			return 1;
+		} else if(res != 1) {
+			Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't read destination hostname length");
+			return 1;
+		}
+
+		char hostname[len+1];
+		res = read(_this->client_fd, hostname, len);
+		hostname[len] = 0;
+		if(res == -1) {
+			Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read(dnsname)@Client_readSocks5RequestAddress");
+			return 1;
+		} else if(res != len) {
+			Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't read destination hostname");
+			return 1;
+		}
+
+		res = nslookup((struct sockaddr *)&_this->dst, hostname, _this->logger);
+		if(res) {
+			Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't resolve target hostname");
+			Client_sendSocks5RequestReply(_this, 0x01, NULL); // 0x01: general failure
+			return 1;
+		}
+	} else if(atyp == 0x04) { // 0x04: IPv6
+		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&_this->dst;
+		res = read(_this->client_fd, &sin6->sin6_addr.s6_addr, 16);
+		if(res == -1) {
+			Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read(v6addr)@Client_readSocks5RequestAddress");
+			return 1;
+		} else if(res != 16) {
+			Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't read destination IPv6 address");
+			return 1;
+		}
+	} else { 
+		Client_sendSocks5RequestReply(_this, 0x08, NULL); // 0x08: Address type not supported
+		return 1; 
+	}
+
+	void *port_addr = (_this->dst.ss_family == AF_INET) 
+		? &((struct sockaddr_in *)&_this->dst)->sin_port // IPv4
+		: &((struct sockaddr_in6 *)&_this->dst)->sin6_port; // IPv6
+	res = read(_this->client_fd, port_addr, 2);
+	if(res == -1) {
+		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read(@Client_readSocks5RequestAddress");
+		return 1;
+	} else if(res != 2) {
+		Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't read destination port");
+		return 1;
+	}
+
+	return 0;
+}
 
 int Client_handleSocks5Request(struct Client *_this) {
-	char buf1[4];
-	int res = readAll(_this->client_fd, buf1, 4);
+	char buf1[3];
+	int res = readAll(_this->client_fd, buf1, 3);
 	if(res == -1) {
-		Logger_perror(_this->logger, LOG_LEVEL_WARN, "readAll@handleSocks5Request");
+		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "readAll@handleSocks5Request");
 		return 1;
-	} else if(res != 4) {
+	} else if(res != 3) {
 		Logger_warn(_this->logger, "Client_handleSocks5Request", "Couldn't read SOCKS5 request, closing connection.");
 		return 1;
 	}
+
+	if(Client_readSocks5RequestAddress(_this)) return 1;
+
 	if(buf1[0] != 0x05) { // Version 5
-		Logger_warn(_this->logger, "Client_handleSocks5Request", "Client sent a request with an invalid version number. Closing connection.");
+		Logger_warn(_this->logger, "Client_handleSocks5Request", "Client sent a request with an invalid version number.");
+		Client_sendSocks5RequestReply(_this, 0x01, NULL); // 0x01: general failure
 		return 1;
 	}
 	if(buf1[1] != 0x01) { // buf[1]: command, 0x01: CONNECT command
 		Logger_info(_this->logger, "Client_handleSocks5Request", 
 				"The client requested an unsupported command: 0x%hhx. Closing connection.", buf1[1]);
+		Client_sendSocks5RequestReply(_this, 0x07, NULL); // 0x07: command not supported
+		return 1;
+	}
+	if(buf1[2] != 0x00) Logger_info(_this->logger, "Client_handleSocks5Request", "RSV != 0");
+
+
+	char addrstr[INET6_ADDRSTRLEN];
+	inet_ntop(_this->dst.ss_family, (_this->dst.ss_family == AF_INET6) 
+			? (void *)&((struct sockaddr_in6 *)&_this->dst)->sin6_addr.s6_addr 
+			: (void *)&((struct sockaddr_in *)&_this->dst)->sin_addr.s_addr, 
+			addrstr, INET6_ADDRSTRLEN);
+	unsigned short port = (_this->dst.ss_family == AF_INET6) 
+		? ((struct sockaddr_in6 *)&_this->dst)->sin6_port 
+		: ((struct sockaddr_in *)&_this->dst)->sin_port;
+	port = htons(port);
+	Logger_verbose(_this->logger, "Client_handleSocks5Request", "CONNECT %s:%hu", addrstr, port);
+
+	if(Client_startForwarding(_this)) {
+		Logger_warn(_this->logger, "Client_handleSocks5Request", "Failed to start forwarding.");
+		Client_sendSocks5RequestReply(_this, 0x01, NULL); // 0x01: general failure
 		return 1;
 	}
 
-	// TODO
-	Logger_warn(_this->logger, "Client_handleSocks5Request", "INCOMPLETE IMPLEMENTATION");
-	return 1;
+	struct sockaddr_storage remote_sockaddr;
+	socklen_t remote_sockaddrlen = sizeof(remote_sockaddr);
+	res = getsockname(_this->remote_fd, (struct sockaddr *)&remote_sockaddr, &remote_sockaddrlen);
+	if(res == -1) {
+		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "getsockname@Client_handleSocks5Request");
+		memset(&remote_sockaddr, 0, sizeof(remote_sockaddr));
+		remote_sockaddr.ss_family = AF_INET;
+	}
+
+	return Client_sendSocks5RequestReply(_this, 0x00, (struct sockaddr *)&remote_sockaddr);
 }
 
 static int Client_directedForward(const struct Client *client, int direction) {
@@ -263,7 +403,7 @@ static int Client_directedForward(const struct Client *client, int direction) {
 		Logger_perror(client->logger, LOG_LEVEL_WARNING, "read@Client_directedForward");
 		return 1;
 	} else if(res == 0) {
-		Logger_verbose(client->logger, "Client_directedForward", "%s closed connection.\n", direction ? "client" : "remote");
+		Logger_verbose(client->logger, "Client_directedForward", "%s closed connection.", direction ? "client" : "remote");
 		return 1;
 	}
 	res = sendAll(dstfd, buf, res);
@@ -281,7 +421,7 @@ int Client_backward(const struct Client *client) {
 
 void Client_debugPrintInfo(const struct Client *client) {
 	// TODO
-	Logger_warn(client->logger, "Client_debugPrintInfo", "TODO: Client_debugPrintInfo\n");
+	Logger_warn(client->logger, "Client_debugPrintInfo", "TODO: Client_debugPrintInfo");
 }
 
 static int sendAll(int fd, void *buf, size_t len) {
@@ -322,15 +462,15 @@ static char *readString(int fd) {
 	return dstbuf;
 }
 
-static int nslookup(struct sockaddr *dst, const char *name) {
+static int nslookup(struct sockaddr *dst, const char *name, const struct Logger *logger) {
 	struct addrinfo *ai;
-	printf("looking up %s\n", name);
+	Logger_verbose(logger, "nslookup", "looking up %s", name);
 	int status = getaddrinfo(name, NULL, NULL, &ai);
 	if(status != 0) {
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
+		Logger_warn(logger, "nslookup", "getaddrinfo: %s", gai_strerror(status));
 		return 1;
 	}
-	printf("nslookup: af: %s.\n", ai->ai_family == AF_INET6 ? "AF_INET6" : ai->ai_family == AF_INET ? "AF_INET" : "?");
+	Logger_verbose(logger, "nslookup", "af: %s.", ai->ai_family == AF_INET6 ? "AF_INET6" : ai->ai_family == AF_INET ? "AF_INET" : "?");
 	if(ai->ai_family == AF_INET) {
 		struct sockaddr_in *sin = (struct sockaddr_in *)dst;
 		*sin = *((struct sockaddr_in *)ai->ai_addr);
@@ -338,7 +478,7 @@ static int nslookup(struct sockaddr *dst, const char *name) {
 		struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)dst;
 		*sin6 = *((struct sockaddr_in6 *)ai->ai_addr);
 	} else {
-		fprintf(stderr, "unknown address family: %d\n", dst->sa_family);
+		Logger_warn(logger, "nslookup", "unknown address family: %d", dst->sa_family);
 		return 1;
 	}
 
