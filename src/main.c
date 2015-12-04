@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <poll.h> // poll, struct pollfd
 #include <string.h> // memset
+#include <getopt.h> // getopt, getopt_long, struct option
 
 #include <sys/types.h>
 #include <sys/socket.h> // socket, bind, listen, accept
@@ -14,16 +15,16 @@
 #include <arpa/inet.h> // inet_ntop
 
 #define BACKLOG 50
-#define HANDLE_OP continue
 #define ARRAY_LENGTH(a) (sizeof(*(a))/sizeof(a))
 
 struct MainContext {
 	struct Logger logger;
-	const char *bindhost;
-	const char *bindport;
+	char bindhost[100];
+	char bindport[20];
 	struct Client *clients;
 	size_t n_clients;
 	int listener_fd;
+	int af;
 };
 
 //void Client_filterClosed(struct Client **clients, size_t *n_clients);
@@ -35,26 +36,30 @@ struct pollfd *getPollFds(const struct MainContext *, size_t *nfds);
 
 void str_addrinfo(char *buf, size_t buflen, const struct addrinfo *);
 
-int main(void) {
+void getOptions(struct MainContext *ctx, int argc, char **argv);
+void printUsage(const struct Logger *, const char *program_name);
+
+int main(int argc, char *argv[]) {
 	struct MainContext ctx = {
-		//.logger = Logger_init(LOG_LEVEL_DEBUG),
 		.logger = Logger_init(LOG_LEVEL_VERBOSE),
-		.bindhost = "localhost",
+		.bindhost = "",
 		.bindport = "1080",
 		.clients = NULL,
 		.n_clients = 0,
-		.listener_fd = -1
+		.listener_fd = -1,
+		.af = AF_UNSPEC
 	};
+
+	getOptions(&ctx, argc, argv);
 
 	struct addrinfo hints;
 	memset(&hints, 0, sizeof(hints));
-	//hints.ai_family = AF_UNSPEC;
-	hints.ai_family = AF_INET;
+	hints.ai_family = ctx.af;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
 
 	struct addrinfo *srvinfo;
-	int status = getaddrinfo(ctx.bindhost, ctx.bindport, &hints, &srvinfo);
+	int status = getaddrinfo(ctx.bindhost[0] ? ctx.bindhost : NULL, ctx.bindport, &hints, &srvinfo);
 	if(status != 0) {
 		Logger_error(&ctx.logger, "getaddrinfo", gai_strerror(status));
 		return 1;
@@ -104,7 +109,7 @@ int main(void) {
 		fds = getPollFds(&ctx, &fds_len);
 		res = poll(fds, fds_len, -1);
 		if(res == -1) { Logger_perror(&ctx.logger, LOG_LEVEL_WARNING, "poll"); continue; }
-		else if(res == 0) { Logger_debug(&ctx.logger, "poll", "poll timeout\n"); continue; }
+		else if(res == 0) { Logger_debug(&ctx.logger, "poll", "poll timeout"); continue; }
 		else Logger_debug(&ctx.logger, "poll", "poll activity.");
 		nfds_t i;
 		for(i = 0; i < fds_len; ++i) {
@@ -121,19 +126,19 @@ int main(void) {
 				struct Client *c = getClientByFd(&ctx, fds[i].fd);
 				if(!c) {
 					Logger_warn(&ctx.logger, "event_loop", "Client already closed.");
-					HANDLE_OP;
+					continue;
 				}
 				size_t index = c - ctx.clients;
 				Client_close(&ctx.clients[index]);
-				HANDLE_OP;
+				continue;
 			}
 			if(!(fds[i].revents & POLLIN)) {
 				fds[i].revents = 0;
-				HANDLE_OP;
+				continue;
 			}
 			if(fds[i].fd == ctx.listener_fd) {
 				res = accept(ctx.listener_fd, NULL, NULL);
-				if(res == -1) HANDLE_OP;
+				if(res == -1) continue;
 				Logger_verbose(&ctx.logger, "event_loop", "accepted connection.");
 
 				struct Client *newclients = (struct Client *)realloc(ctx.clients, ++ctx.n_clients * sizeof(struct Client));
@@ -149,13 +154,13 @@ int main(void) {
 					return 1;
 				}
 				ctx.clients = newclients;
-				newclients[ctx.n_clients-1] = Client_init(res, &ctx.logger);
+				newclients[ctx.n_clients-1] = Client_init(res, &ctx.logger, ctx.af);
 			} else {
 				// handle client connection
 				struct Client *c = getClientByFd(&ctx, fds[i].fd);
 				if(!c) {
-					Logger_warn(&ctx.logger, "event_loop", "Client already closed.\n");
-					HANDLE_OP;
+					Logger_warn(&ctx.logger, "event_loop", "Client already closed.");
+					continue;
 				}
 				int res[2] = {0,0};
 				if(c->client_fd == fds[i].fd) res[0] = Client_handleActivity(c);
@@ -163,7 +168,7 @@ int main(void) {
 				if(res[0] || res[1]) 
 				{
 					Client_close(c);
-					HANDLE_OP;
+					continue;
 				}
 			}
 		}
@@ -279,5 +284,71 @@ void str_addrinfo(char *buf, size_t buflen, const struct addrinfo *res) {
 
 	// convert the IP to a string and print it:
 	inet_ntop(p->ai_family, addr, ipstr, sizeof ipstr);
-	snprintf(buf, buflen, "using address: %s: %s:%hu\n", ipver, ipstr, port);
+	snprintf(buf, buflen, "using address: %s: %s:%hu", ipver, ipstr, port);
+}
+
+void getOptions(struct MainContext *ctx, int argc, char **argv) {
+	static const struct option longopts[] = {
+		{"bind", required_argument, NULL, 'b' },
+		{"port", required_argument, NULL, 'p' },
+		{"ipv4", no_argument, NULL, '4' },
+		{"ipv6", no_argument, NULL, '6' },
+		{"log-level", required_argument, NULL, 'l' },
+		{"help", no_argument, NULL, 'h' },
+		{NULL, 0, NULL, 0}
+	};
+	int c;
+	while(1) {
+		int option_index = 0;
+		c = getopt_long(argc, argv, "b:p:46l:h", longopts, &option_index);
+		if(c == -1) break;
+
+		switch(c) {
+			case 'b':
+				strncpy(ctx->bindhost, optarg, 100);
+				ctx->bindhost[99] = 0; // ensure terminating '\0'
+				break;
+			case 'p':
+				strncpy(ctx->bindport, optarg, 20);
+				ctx->bindport[19] = 0; // ensure terminating '\0'
+				break;
+			case '4':
+				ctx->af = AF_INET;
+				break;
+			case '6':
+				ctx->af = AF_INET6;
+				break;
+			case 'l':
+				sscanf(optarg, "%d", &c);
+				Logger_setMinLevel(&ctx->logger, c);
+				break;
+			case 'h':
+				printUsage(&ctx->logger, argv[0]);
+				exit(0);
+			default:
+				Logger_warn(&ctx->logger, "getOptions", "unknown option -%c %s", c, optarg ? optarg : "");
+				break;
+		}
+	}
+}
+
+void printUsage(const struct Logger *logger, const char *program_name) {
+	static const char *const usagestr = 
+		"%s [OPCIÓK]\n"
+		"Opciók:\n"
+		"    -b, --bind ADDR      A kapcsolatok várása a megadott címen (alapértelmezés: [::] vagy 0.0.0.0)\n"
+		"    -p, --port PORT      A kliensek kapcsolatainak várása a megadott TCP porton (alapértelmezés: 1080)\n"
+		"    -4, --ipv4           Csak IPv4 használata\n"
+		"    -6, --ipv6           Csak IPv6 használata (Az OS mapelheti IPv4-re is)\n"
+		"    -l, --log-level LVL  A logolás szintje \n"
+		"                           0: csendben\n"
+		"                           1: hibák\n"
+		"                           2: figylemeztetések\n"
+		"                           3: információk\n"
+		"                           4: több információ (alapértelmezés)\n"
+		"                           5: debug \n"
+		"    -h, --help           Segítség megjelenítése\n"
+		;
+
+	Logger_info(logger, "usage", usagestr, program_name ? program_name : "./socksd");
 }

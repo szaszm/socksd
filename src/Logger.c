@@ -8,7 +8,7 @@
 #endif
 #define ARRAY_LENGTH(a) (sizeof(a)/sizeof(*(a)))
 
-#define MSG_MAXLEN 255
+#define MSG_MAXLEN 1024
 
 void LOGGER_FUNCTION_DEFAULT_STDERR(const char *domain, const char *message) {
 	fprintf(stderr, "%s: %s\n", domain, message);

@@ -12,9 +12,10 @@ struct Client {
 	struct sockaddr_storage dst;
 	const struct Logger *logger;
 	char socks5_method;
+	int af_restriction;
 };
 
-struct Client Client_init(int fd, const struct Logger *);
+struct Client Client_init(int fd, const struct Logger *, int af_restriction);
 void Client_close(struct Client *);
 int Client_handleActivity(struct Client *);
 int Client_handleRemoteActivity(struct Client *);

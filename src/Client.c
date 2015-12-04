@@ -35,10 +35,10 @@ static int sendAll(int fd, void *buf, size_t buflen);
 
 static char *readString(int fd);
 
-static int nslookup(struct sockaddr *dst, const char *name, const struct Logger *);
+static int nslookup(struct sockaddr *dst, const char *name, const struct Logger *, int af_restriction);
 
 
-struct Client Client_init(int fd, const struct Logger *logger) {
+struct Client Client_init(int fd, const struct Logger *logger, int af_restrict) {
 	struct Client res;
 	res.client_fd = fd;
 	res.remote_fd = 0;
@@ -46,6 +46,7 @@ struct Client Client_init(int fd, const struct Logger *logger) {
 	res.state = STATE_INITIAL_WAIT;
 	res.logger = logger;
 	res.socks5_method = 0xff; // no method by default
+	res.af_restriction = af_restrict;
 	return res;
 }
 
@@ -124,7 +125,7 @@ int Client_handleSocks4Request(struct Client *client) {
 		char *dsthost = readString(client->client_fd);
 		if(!dsthost) Logger_perror(client->logger, LOG_LEVEL_WARNING, "readString@Client_handleSocks4Request");
 		Logger_verbose(client->logger, "Client_handleSocks4Request", "LOOKUP %s", dsthost);
-		if(nslookup((struct sockaddr *)addr, dsthost, client->logger)) {
+		if(nslookup((struct sockaddr *)addr, dsthost, client->logger, client->af_restriction)) {
 			Logger_info(client->logger, "Client_handleSocks4Request", "name lookup failed.");
 			free(dsthost);
 			return 1;
@@ -145,8 +146,11 @@ int Client_handleSocks4Request(struct Client *client) {
 		Client_sendSocks4RequestReply(client, 0);
 		return 1;
 	}
-	res = Client_startForwarding(client);
-	return res || Client_sendSocks4RequestReply(client, 1);
+	if(Client_startForwarding(client)) {
+		Client_sendSocks4RequestReply(client, 0);
+		return 1;
+	}
+	return Client_sendSocks4RequestReply(client, 1);
 }
 
 int Client_sendSocks4RequestReply(const struct Client *client, int granted) {
@@ -166,6 +170,10 @@ int Client_sendSocks4RequestReply(const struct Client *client, int granted) {
 }
 
 int Client_startForwarding(struct Client *client) {
+	if(client->af_restriction != AF_UNSPEC && client->dst.ss_family != client->af_restriction) {
+		Logger_info(client->logger, "Client_startForwarding", "Not allowed destination address family.");
+		return 1;
+	}
 	client->remote_fd = socket(client->dst.ss_family, SOCK_STREAM, 0);
 	if(client->remote_fd == -1) {
 		Logger_perror(client->logger, LOG_LEVEL_WARNING, "socket");
@@ -301,7 +309,7 @@ static int Client_readSocks5RequestAddress(struct Client *_this) {
 			return 1;
 		}
 
-		res = nslookup((struct sockaddr *)&_this->dst, hostname, _this->logger);
+		res = nslookup((struct sockaddr *)&_this->dst, hostname, _this->logger, _this->af_restriction);
 		if(res) {
 			Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't resolve target hostname");
 			Client_sendSocks5RequestReply(_this, 0x01, NULL); // 0x01: general failure
@@ -462,10 +470,13 @@ static char *readString(int fd) {
 	return dstbuf;
 }
 
-static int nslookup(struct sockaddr *dst, const char *name, const struct Logger *logger) {
+static int nslookup(struct sockaddr *dst, const char *name, const struct Logger *logger, int af_restriction) {
 	struct addrinfo *ai;
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof(struct addrinfo));
+	hints.ai_family = af_restriction;
 	Logger_verbose(logger, "nslookup", "looking up %s", name);
-	int status = getaddrinfo(name, NULL, NULL, &ai);
+	int status = getaddrinfo(name, NULL, &hints, &ai);
 	if(status != 0) {
 		Logger_warn(logger, "nslookup", "getaddrinfo: %s", gai_strerror(status));
 		return 1;
