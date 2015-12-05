@@ -1,0 +1,48 @@
+                     socksd SOCKS4a/5 proxy szerver
+                        Tesztelési dokumentáció
+
+  1. Bevezetés
+
+A program egy szabványos protokollt valósít meg, nem elsőként, ennek hála pedig
+jelentősen egyszerűsödik a tesztelés, hiszen csak ki kell próbálni egy meglévő
+implementációval.
+
+
+  2. Tesztelés Google Chrome vagy Chromium böngészőkkel
+
+A fejlesztés során az elsődleges teszt az volt, hogy a proxyn keresztül
+használtam a webet. Ezt a Chromium böngésző --proxy-server=socks4://ip:port
+illetve a --proxy-server=socks://ip:port kapcsolókkal tudtam megtenni. Előbbi
+a SOCKS4a, míg utóbbi a SOCKS5 tesztelésére volt jó.
+
+A fejlesztés során bőségesen jöttek elő hibák, ezek felderítésére vezettem be a
+logolást. A hibakeresésben sokat tud segíteni időnként a verbose vagy debug
+szintű logolás, de van, hogy ez sem elég. Ilyenkor az strace segédprogrammal
+követtem az összes rendszerhívást, így előkerült a probléma.
+
+  3. Tesztelés Firefoxszal
+
+A másik fő tesztelőeszközöm a Firefox böngésző volt, ami grafikusan is
+elérhetővé teszi a proxy szerver konfigurálásának lehetőségét. Itt még azt is
+ki lehet választani, hogy a névfeloldás a távoli névszerveren, vagy helyben 
+történjen.
+
+A webböngészős tesztelést kiegészítette a hálózati forgalom megfigyelése a
+Wireshark nevű segédprogrammal, ami megkönnyíti az üzenetek és azok tartalmának
+elemzését, és így a hibakeresést is. Ezzel tudtam megfigyelni a protokoll-leírás
+nehezen érthető részeit a gyakorlatban, így segített az implementációban is, nem
+csak a hibakeresésben.
+
+
+  4. A szoftverben maradt hibák
+
+A socksd tesztelése során előjött egy hiba, aminek az okát nem sikerült
+felderítenem. A hiba nem teszi használhatatlanná a programot, de kellemetlen
+találkozni vele. Új kapcsolat kiépítésekor a Client_startForwarding-on belül a
+connect() hívás hosszú időre blokkolja a szálat, ezért addig nem kezelődik le
+semmilyen más esemény.
+
+Ezenkívül a socksd működése teljesítmény szempontjából nem a lehető legjobb,
+mivel az elavult (de hordozható) poll() hívással figyeli az eseményeket, illetve
+a névfeloldást és a kapcsolat kiépítését szinkron módon végzi, blokkolva az
+egyetlen szálat.

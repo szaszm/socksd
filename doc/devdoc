@@ -1,0 +1,63 @@
+                     socksd SOCKS4a/5 proxy szerver
+                        Fejlesztői dokumentáció
+
+  1. Bevezető
+
+A socksd egy hálózati C program, ami a POSIX szabvány BSD sockets API-ját
+használva megvalósítja a SOCKS4, SOCKS4a és SOCKS5 protokollokat. A fordításhoz
+egy szabványos C11 fordító és egy POSIX operációs rendszer szükséges. A build
+scriptek a GYP és a ninja szoftverekre épülnek, ezért szükséges lehet ezeket
+telepíteni a fordításhoz. Debianon:
+  
+  apt-get install gyp ninja-build
+
+  
+  2. Felépítés
+
+A program egy szálú és eseményvezérelt működésű. Az eseményeket a poll hívás
+közli. A main loop a main()-ben van, kilépni egy SIGINT|SIGTERM|SIGQUIT
+signallal lehet.
+
+A kliensek nyilvántartása egy egyszeresen láncolt listában történik. Ennek a 
+típusa struct ClientList, felépítése pedig a következő:
+
+struct ClientList {
+	struct Client c;
+	struct ClientList *next;
+};
+
+A kliensekhez tartozó eseményeket a Client modul kezeli, ebben van megvalósítva
+a SOCKS protokoll is. A kívülről is használható függvények a Client.h fájlban
+vannak deklarálva, a modulon belüli, privát használatra szánt függvények pedig
+statikus függvényként vannak definiálva a Client.c fájlban.
+
+A kimenet képzését teljes egészében a Logger modul végzi. A Logger rugalmas,
+több szintű logolást tesz lehetővé, alapértelmezés szerint a standard kimenetre
+és a standard error adatfolyamra. Az alapértelmezett viselkedés kiváltható
+saját függvény átadásával, így gyakorlatilag bármilyen módon képes üzeneteket
+rögzíteni a modul.
+
+A Logger.h fájlban vannak deklarálva a Logger vezérléséhez
+és a logolást lehetővé tevő függvények. A logolás a printf-hez hasonló változó
+argumentumlistás függvényként van megvalósítva.
+
+A logolás gyorsításához definiáltam egy perror segédfüggvényt, ami a legutóbbi
+rendszerhívás hibáját jeleníti meg, illetve létrehoztam makrókat a különböző
+logolási szintekre történő üzenetküldéshez. Ehhez változó paraméterlistájú
+makrókat használtam. Ezek a Logger.h-ban vannak definiálva.
+
+
+  3. Egyéb függvényleírások:
+
+A paraméterlista elemzését a getopt_long függvénnyel végeztem, ez a kódrész a
+main.c:getOptions() függvényben található. 
+
+A bezárt kliensek felszabadítása a main.c:Client_filterClosed() függvényben 
+történik. 
+
+A kilépési jelre reagáló függvényt a main.c:setSignalHandler() regisztrálja, a
+jelekre pedig az main.c:onExitSignal() reagál.
+
+A main.c:getPollFds() állítja össze a poll() rendszerhívás paraméteréül szolgáló
+tömböt, amibe összeszedi a nyitott kapcsolatokat és a szerver socketjét is.
+

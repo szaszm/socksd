@@ -1,0 +1,95 @@
+                     socksd SOCKS4a/5 proxy szerver
+                       Felhasználói dokumentáció
+
+  1. Bevezető
+
+A SOCKS protokoll célja a hálózati forgalom továbbitása hosztok között. Ezt úgy
+éri el, hogy a szolgáltatást használni kívánó alkalmazások csatlakoznak a
+proxyhoz, majd egy egyeztetést követően a kapcsolat már változatlanul továbbít
+minden forgalmat a két hoszt között. Alapesetben szükséges a használathoz az
+alkalmazás oldaláról is támogatás, de már léteznek olyan megoldások, amelyek
+átlátszóvá teszik a proxyhasználatot.
+
+A socksd megvalósítja a SOCKS4a és SOCKS5 protokollok leggyakrabban használt
+részeit: a TCP kapcsolat kiépítését két hoszt között. Az ötös verzió újdonságai
+ezen a téren az authentikáció és az IPv6 támogatása.  Ezenkívül még bevezette
+az UDP támogatást is ez a verzió, de ez a projekt keretein kívül esik.
+
+
+  2. Funkciók
+
+A socksd a SOCKS protokollból a TCP kapcsolat kiépítését támogatja,
+authentikáció nélkül, illetve támogatja a távoli névfeloldást is, hogy a helyi
+névszervertől se függjön a felhasználó.
+
+A program támogatja az IPv4-et, illetve SOCKS5 módban az IPv6-ot is.
+
+A legtöbb kliensszoftver pontosan ezeket a funkciókat támogatja, ezért esett
+pont ezekre a választás. így a szoftver teljes körűen használható a népszerű
+webböngészőkkel, illetve socks fordítókkal, mint a SocksCap.
+
+A socksd Linuxon lett fejlesztve és tesztelve, de működhet a többi POSIX
+szabványos operációs rendszeren is. A fejlesztéskor használt processzor
+architektúra az amd64, de elvileg hordozható más architektúrára is.
+
+
+  3. Fordítás
+
+A szoftver fejlesztése során kizárólag a szabványos POSIX hívásokat használtam,
+ezért nem szükséges a szabványos C könyvtáron kívül más függvénykönyvtár a
+működéséhez. A forrásfájlok az src mappában találhatóak, külön kell fordulniuk,
+majd össze kell linkelni őket egy futtatható binárisba. A projekt könyvtárában
+található egy build.sh nevű script, ami a "gen" paraméterrel ninja fájlokat hoz
+létre, paraméter nélkül pedig lefordítja a projektet.
+
+A projektek generálására a GYP (Generate Your Projects) szoftvert használtam.
+Ezt a Google fejleszti, és ezt használják a chromium és a node.js projektek
+fordítására is. A szintaxisa Python alapú, egy adatstruktúrában van minden
+opció definiálva. Ezeket a szabályokat használva generál a GYP projektfájlokat,
+amelyeket használva lefordítható a projekt.
+
+Az alapértelmezett projektformátum a ninja lett, mivel ennek az egyszerű
+szintaxisa miatt rendkívül gyorsan tud újrafordítani. A hátránya viszont, hogy
+a GNU Make-hez képest jóval kevésbé elterjedt, ezért a legtöbb rendszeren új
+csomag telepítése szükséges a fordításhoz.
+
+Az alapértelmezett projektformátum a build.sh script átírásával változtatható,
+a fordítási opciók pedig a config.gypi fájlban vannak. Az alapértelmezett
+C fordító a clang, ezt is a build.sh script átírásával, majd a projekt
+újragenerálásával lehet változtatni.
+
+A projekt egyszerűsége miatt könnyen fordítható GYP és ninja nélkül is, a
+következő paranccsal:
+
+  gcc -o out/socksd -D_POSIX_SOURCE -DNDEBUG -Wall -Wextra -Werror -std=c11\
+       -O3 src/*.c
+
+
+  4. Használat
+
+A program vezérlése az indításkori paraméterezéssel történik, futás közben nem
+változtatható a konfigurációja. A "-h" kapcsolóval futtatva a socksd-t, az
+kiírja a paraméterezési lehetőségeit és az alapértelmezett beállításait.
+Ezek a következők:
+
+usage: socksd [OPCIÓK]
+Opciók:
+    -b, --bind ADDR      A kapcsolatok várása a megadott címen
+                          (alapértelmezés: [::] vagy 0.0.0.0)
+    -p, --port PORT      A kliensek kapcsolatainak várása a megadott
+                          TCP porton (alapértelmezés: 1080)
+    -4, --ipv4           Csak IPv4 használata
+    -6, --ipv6           Csak IPv6 használata (Az OS mapelheti IPv4-re is)
+    -l, --log-level LVL  A logolás szintje
+                           0: csendben
+                           1: hibák
+                           2: figylemeztetések
+                           3: információk
+                           4: több információ (alapértelmezés)
+                           5: debug
+    -f, --log-file FILE  A logolás ebbe a fájlba történik.
+                          (alapértelmezés: hibák, figyelmeztetések - stderr,
+                           más - stdout)
+    -h, --help           Segítség megjelenítése
+
+A programból kilépni SIGINT, SIGTERM és SIGQUIT jelek küldésével lehet.
