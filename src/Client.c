@@ -37,6 +37,14 @@ static char *readString(int fd);
 
 static int nslookup(struct sockaddr *dst, const char *name, const struct Logger *, int af_restriction);
 
+static int Client_handleInitialMessage(struct Client *);
+static int Client_handleSocks4Request(struct Client *);
+static int Client_sendSocks4RequestReply(const struct Client *, int granted);
+static int Client_startForwarding(struct Client *client);
+static int Client_handleSocks5MethodRequest(struct Client *);
+static int Client_handleSocks5Request(struct Client *);
+static int Client_forward(const struct Client *);
+static int Client_backward(const struct Client *);
 
 struct Client Client_init(int fd, const struct Logger *logger, int af_restrict) {
 	struct Client res;
@@ -88,7 +96,7 @@ int Client_handleRemoteActivity(struct Client *client) {
 	return Client_backward(client);
 }
 
-int Client_handleInitialMessage(struct Client *client) {
+static int Client_handleInitialMessage(struct Client *client) {
 	char version;
 	int res = read(client->client_fd, &version, 1);
 	if(res == 0) {
@@ -105,7 +113,7 @@ int Client_handleInitialMessage(struct Client *client) {
 	return 0;
 }
 
-int Client_handleSocks4Request(struct Client *client) {
+static int Client_handleSocks4Request(struct Client *client) {
 	char buf[7];
 	int res = readAll(client->client_fd, buf, 7);
 	if(res == -1) {
@@ -153,7 +161,7 @@ int Client_handleSocks4Request(struct Client *client) {
 	return Client_sendSocks4RequestReply(client, 1);
 }
 
-int Client_sendSocks4RequestReply(const struct Client *client, int granted) {
+static int Client_sendSocks4RequestReply(const struct Client *client, int granted) {
 	char buf[8];
 	memset(buf, 0, 8);
 	buf[1] = granted ? 90 : 91;
@@ -169,7 +177,7 @@ int Client_sendSocks4RequestReply(const struct Client *client, int granted) {
 	return 0;
 }
 
-int Client_startForwarding(struct Client *client) {
+static int Client_startForwarding(struct Client *client) {
 	if(client->af_restriction != AF_UNSPEC && client->dst.ss_family != client->af_restriction) {
 		Logger_info(client->logger, "Client_startForwarding", "Not allowed destination address family.");
 		return 1;
@@ -208,7 +216,7 @@ static int Client_selectSocks5Method(struct Client *_this, unsigned char method_
 	return 0;
 }
 
-int Client_handleSocks5MethodRequest(struct Client *_this) {
+static int Client_handleSocks5MethodRequest(struct Client *_this) {
 	unsigned char n_methods;
 	int res = read(_this->client_fd, &n_methods, 1);
 	if(res < 1) {
@@ -345,7 +353,7 @@ static int Client_readSocks5RequestAddress(struct Client *_this) {
 	return 0;
 }
 
-int Client_handleSocks5Request(struct Client *_this) {
+static int Client_handleSocks5Request(struct Client *_this) {
 	char buf1[3];
 	int res = readAll(_this->client_fd, buf1, 3);
 	if(res == -1) {
@@ -419,17 +427,12 @@ static int Client_directedForward(const struct Client *client, int direction) {
 }
 
 
-int Client_forward(const struct Client *client) {
+static int Client_forward(const struct Client *client) {
 	return Client_directedForward(client, 1);
 }
 
-int Client_backward(const struct Client *client) {
+static int Client_backward(const struct Client *client) {
 	return Client_directedForward(client, 0);
-}
-
-void Client_debugPrintInfo(const struct Client *client) {
-	// TODO
-	Logger_warn(client->logger, "Client_debugPrintInfo", "TODO: Client_debugPrintInfo");
 }
 
 static int sendAll(int fd, void *buf, size_t len) {

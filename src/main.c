@@ -21,22 +21,27 @@
 // http://stackoverflow.com/questions/3599160/unused-parameter-warnings-in-c-code
 #define UNUSED(x) (void)(x)
 
+struct ClientList;
+
 struct MainContext {
 	struct Logger logger;
 	char bindhost[100];
 	char bindport[20];
-	struct Client *clients;
-	size_t n_clients;
+	struct ClientList *clients;
 	int listener_fd;
 	int af;
 	FILE *logfile;
 };
 
-//void Client_filterClosed(struct Client **clients, size_t *n_clients);
+struct ClientList {
+	struct Client c;
+	struct ClientList *next;
+};
+
+void ClientList_add(struct ClientList **ctx, struct ClientList *_new);
+void ClientList_removeAfter(struct ClientList **list, struct ClientList *prev, const struct Logger *);
 void Client_filterClosed(struct MainContext *);
-//struct Client *getClientByFd(struct Client *clients, size_t len, int fd);
 struct Client *getClientByFd(const struct MainContext *, int fd);
-//struct pollfd *getPollFds(int listener_fd, struct Client *clients, size_t n_clients, size_t *nfds);
 struct pollfd *getPollFds(const struct MainContext *, size_t *nfds);
 
 void str_addrinfo(char *buf, size_t buflen, const struct addrinfo *);
@@ -54,7 +59,6 @@ int main(int argc, char *argv[]) {
 		.bindhost = "",
 		.bindport = "1080",
 		.clients = NULL,
-		.n_clients = 0,
 		.listener_fd = -1,
 		.af = AF_UNSPEC,
 		.logfile = NULL
@@ -146,8 +150,7 @@ int main(int argc, char *argv[]) {
 					Logger_warn(&ctx.logger, "event_loop", "Client already closed.");
 					continue;
 				}
-				size_t index = c - ctx.clients;
-				Client_close(&ctx.clients[index]);
+				Client_close(c);
 				continue;
 			}
 			if(!(fds[i].revents & POLLIN)) {
@@ -158,21 +161,18 @@ int main(int argc, char *argv[]) {
 				res = accept(ctx.listener_fd, NULL, NULL);
 				if(res == -1) continue;
 				Logger_verbose(&ctx.logger, "event_loop", "accepted connection.");
-
-				struct Client *newclients = (struct Client *)realloc(ctx.clients, ++ctx.n_clients * sizeof(struct Client));
-				if(!newclients) {
-					Logger_perror(&ctx.logger, LOG_LEVEL_ERROR, "realloc@event_loop");
-					size_t j;
-					for(j = 0; j < ctx.n_clients; ++j) {
-						if(ctx.clients[j].client_fd) close(ctx.clients[j].client_fd);
-						if(ctx.clients[j].remote_fd) close(ctx.clients[j].remote_fd);
+				struct ClientList *new_client = (struct ClientList *)malloc(sizeof(struct ClientList));
+				if(!new_client) {
+					Logger_perror(&ctx.logger, LOG_LEVEL_ERROR, "malloc@event_loop");
+					while(ctx.clients) {
+						ClientList_removeAfter(&ctx.clients, NULL, &ctx.logger);
 					}
-					free(ctx.clients);
 					close(ctx.listener_fd);
 					return 1;
 				}
-				ctx.clients = newclients;
-				newclients[ctx.n_clients-1] = Client_init(res, &ctx.logger, ctx.af);
+
+				new_client->c = Client_init(res, &ctx.logger, ctx.af);
+				ClientList_add(&ctx.clients, new_client);
 			} else {
 				// handle client connection
 				struct Client *c = getClientByFd(&ctx, fds[i].fd);
@@ -200,50 +200,40 @@ int main(int argc, char *argv[]) {
 }
 
 void Client_filterClosed(struct MainContext *ctx) {
-	size_t i, offset = 0;
-	struct Client *clients = ctx->clients;
-	size_t n_clients = ctx->n_clients;
-	for(i = 0; i + offset < n_clients; ) {
-		if(clients[i+offset].client_fd == 0 && clients[i+offset].remote_fd == 0)  {
-			offset++;
-			continue;
+	struct ClientList *it = ctx->clients;
+	struct ClientList *prev = NULL;
+	for(it = ctx->clients; it != NULL;) {
+		struct Client *c = &it->c;
+		if(c->client_fd == 0 && c->remote_fd == 0) {
+			ClientList_removeAfter(&ctx->clients, prev, &ctx->logger);
+			if(prev) it = prev->next; // it is invalidated so let it point to the next valid item
+			else it = ctx->clients;
+		} else {
+			prev = it;
+			it = it->next;
 		}
-		clients[i] = clients[i+offset];
-		i++;
 	}
-	if(offset == 0) return;
-	struct Client *newptr = (struct Client *)realloc(clients, (n_clients - offset)*sizeof(struct Client));
-	if(newptr == NULL && n_clients != offset) {
-		Logger_perror(&ctx->logger, LOG_LEVEL_ERROR, "realloc@Client_filterClosed");
-		exit(1);
-	} else if(n_clients == offset){
+	if(!ctx->clients) {
 		Logger_info(&ctx->logger, "Client_filterClosed", "no clients remaining.");
 	}
-
-	ctx->clients = newptr;
-	ctx->n_clients -= offset;
 }
 
 
 struct Client *getClientByFd(const struct MainContext *ctx, int fd) {
-	size_t i;
-	for(i = 0; i < ctx->n_clients; ++i) {
-		if(ctx->clients[i].client_fd == fd || ctx->clients[i].remote_fd == fd)
-			return &ctx->clients[i];
+	struct ClientList *it;
+	for(it = ctx->clients; it; it = it->next) {
+		if(it->c.client_fd == fd || it->c.remote_fd == fd)
+			return &it->c;
 	}
 	return NULL;
 }
 
 struct pollfd *getPollFds(const struct MainContext *ctx, size_t *nfds) {
-	size_t i;
 	size_t fds = 0;
-	for(i = 0; i < ctx->n_clients; ++i) {
-		if(ctx->clients[i].client_fd) {
-			fds++;
-		}
-		if(ctx->clients[i].remote_fd) {
-			fds++;
-		}
+	struct ClientList *it;
+	for(it = ctx->clients; it; it = it->next) {
+		if(it->c.client_fd) fds++;
+		if(it->c.remote_fd) fds++;
 	}
 	fds++; // one more for the listener
 	*nfds = fds;
@@ -253,17 +243,17 @@ struct pollfd *getPollFds(const struct MainContext *ctx, size_t *nfds) {
 		return NULL;
 	}
 	size_t j;
-	for(i = j = 0; i < ctx->n_clients; ++i) {
-		if(ctx->clients[i].client_fd) {
+	for(j = 0, it = ctx->clients; it; it = it->next) {
+		if(it->c.client_fd) {
 			res[j++] = (struct pollfd){
-				.fd = ctx->clients[i].client_fd,
+				.fd = it->c.client_fd,
 				.events = POLLIN,
 				.revents = 0
 			};
 		}
-		if(ctx->clients[i].remote_fd) {
+		if(it->c.remote_fd) {
 			res[j++] = (struct pollfd){
-				.fd = ctx->clients[i].remote_fd,
+				.fd = it->c.remote_fd,
 				.events = POLLIN,
 				.revents = 0
 			};
@@ -391,4 +381,28 @@ int setSignalHandler(int signum, void (*handler)(int)) {
 void onExitSignal(int signum) {
 	UNUSED(signum);
 	terminate = 1;
+}
+
+void ClientList_add(struct ClientList **ctx, struct ClientList *_new) {
+	_new->next = *ctx;
+	*ctx = _new;
+}
+
+void ClientList_removeAfter(struct ClientList **list, struct ClientList *prev, const struct Logger *logger) {
+	if(prev) {
+		struct ClientList *item = prev->next;
+		if(!item) {
+			Logger_error(logger, "ClientList_removeAfter", "Requested to remove non-existent item.");
+		}
+		prev->next = item->next;
+		if(item->c.client_fd) close(item->c.client_fd);
+		if(item->c.remote_fd) close(item->c.remote_fd);
+		free(item);
+	} else {
+		struct ClientList *item = *list;
+		*list = (*list)->next;
+		if(item->c.client_fd) close(item->c.client_fd);
+		if(item->c.remote_fd) close(item->c.remote_fd);
+		free(item);
+	}
 }

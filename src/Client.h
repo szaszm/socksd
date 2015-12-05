@@ -19,15 +19,6 @@ struct Client Client_init(int fd, const struct Logger *, int af_restriction);
 void Client_close(struct Client *);
 int Client_handleActivity(struct Client *);
 int Client_handleRemoteActivity(struct Client *);
-int Client_handleInitialMessage(struct Client *);
-int Client_handleSocks4Request(struct Client *);
-int Client_sendSocks4RequestReply(const struct Client *, int granted);
-int Client_startForwarding(struct Client *client);
-int Client_handleSocks5MethodRequest(struct Client *);
-int Client_handleSocks5Request(struct Client *);
-int Client_forward(const struct Client *);
-int Client_backward(const struct Client *);
-void Client_debugPrintInfo(const struct Client *);
 
 
 #endif /* CLIENT_H */
