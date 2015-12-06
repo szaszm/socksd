@@ -2,7 +2,7 @@
 #include "Logger.h"
 
 #include <stdlib.h>
-#include <stdio.h>
+#include <stdio.h> // for opening log file
 #include <stdarg.h>
 #include <unistd.h>
 #include <poll.h> // poll, struct pollfd
@@ -373,7 +373,7 @@ void printUsage(const struct Logger *logger, const char *program_name) {
 
 int setSignalHandler(int signum, void (*handler)(int)) {
 	struct sigaction act;
-	memset(&act, 0, sizeof(sigaction));
+	memset(&act, 0, sizeof(struct sigaction));
 	act.sa_handler = handler;
 	return sigaction(signum, &act, NULL);
 }

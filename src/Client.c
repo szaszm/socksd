@@ -3,7 +3,6 @@
 
 #include <unistd.h>
 #include <arpa/inet.h> // struct sockaddr_in{,6}, inet_ntop
-#include <stdio.h>
 #include <stdlib.h> // realloc, free
 #include <string.h> // memset
 #include <errno.h> // errno
@@ -410,11 +409,11 @@ static int Client_handleSocks5Request(struct Client *_this) {
 }
 
 static int Client_directedForward(const struct Client *client, int direction) {
-	char buf[BUFSIZ];
+	char buf[1024];
 	int res;
 	int srcfd = (direction) ? client->client_fd : client->remote_fd;
 	int dstfd = (direction) ? client->remote_fd : client->client_fd;
-	res = read(srcfd, buf, BUFSIZ);
+	res = read(srcfd, buf, sizeof(buf));
 	if(res == -1) {
 		Logger_perror(client->logger, LOG_LEVEL_WARNING, "read@Client_directedForward");
 		return 1;

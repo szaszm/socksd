@@ -34,6 +34,16 @@ nehezen érthető részeit a gyakorlatban, így segített az implementációban 
 csak a hibakeresésben.
 
 
+  4. Tesztelés Valgrinddal
+
+Miután késznek véltem a programot, teszteltem a Valgrind nevű segédprogrammal,
+amely a hibás memóriakezelés detektálását teszi lehetővé a forráskód módosítása
+nélkül. Memóriaszivárgást nem jelzett, azonban egy elírás miatt nem volt
+megfelelően inicializálva a setSignalHandler()-ben a struct sigaction. (A
+memset utolsó paraméterébe sizeof(sigaction) került sizeof(struct sigaction)
+helyett.)
+
+
   4. A szoftverben maradt hibák
 
 A socksd tesztelése során előjött egy hiba, aminek az okát nem sikerült
