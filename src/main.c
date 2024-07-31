@@ -351,21 +351,21 @@ void getOptions(struct MainContext *ctx, int argc, char **argv) {
 
 void printUsage(const struct Logger *logger, const char *program_name) {
 	static const char *const usagestr = 
-		"%s [OPCIÓK]\n"
-		"Opciók:\n"
-		"    -b, --bind ADDR      A kapcsolatok várása a megadott címen (alapértelmezés: [::] vagy 0.0.0.0)\n"
-		"    -p, --port PORT      A kliensek kapcsolatainak várása a megadott TCP porton (alapértelmezés: 1080)\n"
-		"    -4, --ipv4           Csak IPv4 használata\n"
-		"    -6, --ipv6           Csak IPv6 használata (Az OS mapelheti IPv4-re is)\n"
-		"    -l, --log-level LVL  A logolás szintje \n"
-		"                           0: csendben\n"
-		"                           1: hibák\n"
-		"                           2: figylemeztetések\n"
-		"                           3: információk\n"
-		"                           4: több információ (alapértelmezés)\n"
+		"%s [OPTIONS]\n"
+		"Options:\n"
+		"    -b, --bind ADDR      Listen for connections on the specified address (default: [::] or 0.0.0.0)\n"
+		"    -p, --port PORT      Listen for connections on the specified TCP port (default: 1080)\n"
+		"    -4, --ipv4           Use IPv4 only\n"
+		"    -6, --ipv6           Use IPv6 only (The OS may map it to IPv4 too)\n"
+		"    -l, --log-level LVL  Log level \n"
+		"                           0: quiet\n"
+		"                           1: error\n"
+		"                           2: warning\n"
+		"                           3: info (default)\n"
+		"                           4: verbose\n"
 		"                           5: debug \n"
-		"    -f, --log-file FILE  A logolás ebbe a fájlba történik. (alapértelmezés: hibák, figyelmeztetések - stderr, más - stdout)\n"
-		"    -h, --help           Segítség megjelenítése\n"
+		"    -f, --log-file FILE  Log to this file. (default: error, warning -> stderr, everything else -> stdout)\n"
+		"    -h, --help           Show this help\n"
 		;
 
 	Logger_info(logger, "usage", usagestr, program_name ? program_name : "./socksd");
