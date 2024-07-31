@@ -1,6 +1,7 @@
 #include "Client.h"
 #include "Logger.h"
 
+#include <assert.h>
 #include <unistd.h>
 #include <arpa/inet.h> // struct sockaddr_in{,6}, inet_ntop
 #include <stdlib.h> // realloc, free
@@ -22,7 +23,7 @@ static const char *const SOCKS5_METHODS[] = {
  * @param void* buf The buffer to read to
  * @param size_t len The number of bytes to read
  */
-static int readAll(int fd, void *buf, size_t len);
+static ssize_t readAll(int fd, void *buf, size_t len);
 
 /**
  * Keeps sending client until all is sent
@@ -30,7 +31,7 @@ static int readAll(int fd, void *buf, size_t len);
  * @param void* buf The data to send
  * @param size_t buflen The number of bytes to send.
  */
-static int sendAll(int fd, void *buf, size_t buflen);
+static ssize_t sendAll(int fd, void *buf, size_t buflen);
 
 static char *readString(int fd);
 
@@ -96,8 +97,8 @@ int Client_handleRemoteActivity(struct Client *client) {
 }
 
 static int Client_handleInitialMessage(struct Client *client) {
-	char version;
-	int res = read(client->client_fd, &version, 1);
+	unsigned char version;
+	ssize_t res = read(client->client_fd, &version, 1);
 	if(res == 0) {
 		// connection closed
 		return 1;
@@ -114,7 +115,7 @@ static int Client_handleInitialMessage(struct Client *client) {
 
 static int Client_handleSocks4Request(struct Client *client) {
 	char buf[7];
-	int res = readAll(client->client_fd, buf, 7);
+	ssize_t res = readAll(client->client_fd, buf, 7);
 	if(res == -1) {
 		Logger_perror(client->logger, LOG_LEVEL_WARNING, "read@Client_handleSocks4Request");
 		return 1;
@@ -164,7 +165,7 @@ static int Client_sendSocks4RequestReply(const struct Client *client, int grante
 	char buf[8];
 	memset(buf, 0, 8);
 	buf[1] = granted ? 90 : 91;
-	int res = sendAll(client->client_fd, buf, 8);
+	ssize_t res = sendAll(client->client_fd, buf, 8);
 	if(res == -1) {
 		Logger_perror(client->logger, LOG_LEVEL_WARNING, "send@Client_sendSocks4RequestReply");
 		return 1;
@@ -202,7 +203,7 @@ static int Client_selectSocks5Method(struct Client *_this, unsigned char method_
 	unsigned char response[2];
 	response[0] = 5;
 	response[1] = _this->socks5_method = method_id;
-	int res = sendAll(_this->client_fd, response, 2);
+	ssize_t res = sendAll(_this->client_fd, response, 2);
 	if(res == -1) {
 		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "sendAll@Client_selectSocks5Method");
 		return 1;
@@ -217,7 +218,7 @@ static int Client_selectSocks5Method(struct Client *_this, unsigned char method_
 
 static int Client_handleSocks5MethodRequest(struct Client *_this) {
 	unsigned char n_methods;
-	int res = read(_this->client_fd, &n_methods, 1);
+	ssize_t res = read(_this->client_fd, &n_methods, 1);
 	if(res < 1) {
 		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read@Client_handleSocks5MethodRequest");
 		return 1;
@@ -251,7 +252,7 @@ static int Client_handleSocks5MethodRequest(struct Client *_this) {
 }
 
 static int Client_sendSocks5RequestReply(struct Client *_this, unsigned char reply, struct sockaddr *bnd) {
-	int addrlen = (bnd && bnd->sa_family == AF_INET6) ? 16 : 4;
+	size_t addrlen = (bnd && bnd->sa_family == AF_INET6) ? 16 : 4;
 	unsigned char replybuf[6 + addrlen];
 	memset(replybuf, 0, sizeof(replybuf));
 	replybuf[0] = 0x05; // version
@@ -269,12 +270,12 @@ static int Client_sendSocks5RequestReply(struct Client *_this, unsigned char rep
 		}
 	}
 
-	return sendAll(_this->client_fd, replybuf, 6 + addrlen) != (6 + addrlen);
+	return sendAll(_this->client_fd, replybuf, 6 + addrlen) != (6 + (ssize_t)addrlen);
 }
 
 static int Client_readSocks5RequestAddress(struct Client *_this) {
 	unsigned char atyp;
-	int res = read(_this->client_fd, &atyp, 1);
+	ssize_t res = read(_this->client_fd, &atyp, 1);
 	if(res == -1) {
 		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "read(atyp)@Client_readSocks5RequestAddress");
 		return 1;
@@ -316,8 +317,8 @@ static int Client_readSocks5RequestAddress(struct Client *_this) {
 			return 1;
 		}
 
-		res = nslookup((struct sockaddr *)&_this->dst, hostname, _this->logger, _this->af_restriction);
-		if(res) {
+		const int lookup_result = nslookup((struct sockaddr *)&_this->dst, hostname, _this->logger, _this->af_restriction);
+		if(lookup_result) {
 			Logger_warn(_this->logger, "Client_readSocks5RequestAddress", "Couldn't resolve target hostname");
 			Client_sendSocks5RequestReply(_this, 0x01, NULL); // 0x01: general failure
 			return 1;
@@ -354,7 +355,7 @@ static int Client_readSocks5RequestAddress(struct Client *_this) {
 
 static int Client_handleSocks5Request(struct Client *_this) {
 	char buf1[3];
-	int res = readAll(_this->client_fd, buf1, 3);
+	ssize_t res = readAll(_this->client_fd, buf1, 3);
 	if(res == -1) {
 		Logger_perror(_this->logger, LOG_LEVEL_WARNING, "readAll@handleSocks5Request");
 		return 1;
@@ -410,7 +411,7 @@ static int Client_handleSocks5Request(struct Client *_this) {
 
 static int Client_directedForward(const struct Client *client, int direction) {
 	char buf[1024];
-	int res;
+	ssize_t res;
 	int srcfd = (direction) ? client->client_fd : client->remote_fd;
 	int dstfd = (direction) ? client->remote_fd : client->client_fd;
 	res = read(srcfd, buf, sizeof(buf));
@@ -421,7 +422,8 @@ static int Client_directedForward(const struct Client *client, int direction) {
 		Logger_verbose(client->logger, "Client_directedForward", "%s closed connection.", direction ? "client" : "remote");
 		return 1;
 	}
-	res = sendAll(dstfd, buf, res);
+	assert(res > 0);
+	res = sendAll(dstfd, buf, (size_t)res);
 	return res == -1;
 }
 
@@ -434,24 +436,24 @@ static int Client_backward(const struct Client *client) {
 	return Client_directedForward(client, 0);
 }
 
-static int sendAll(int fd, void *buf, size_t len) {
+static ssize_t sendAll(int fd, void *buf, size_t len) {
 	if(len == 0) return 0;
-	size_t sent = 0;
-	int res;
-	while((res = send(fd, buf+sent, len-sent, 0)) != -1 && res && (sent += res) < len);
+	ssize_t sent = 0;
+	ssize_t res;
+	while((res = send(fd, (char*)buf+sent, len-(size_t)sent, 0)) != -1 && res > 0 && (size_t)(sent += res) < len);
 	return res == -1 ? -1 : sent;
 }
 
-static int readAll(int fd, void *buf, size_t len) {
+static ssize_t readAll(int fd, void *buf, size_t len) {
 	if(len == 0) return 0;
-	size_t _read = 0;
-	int res;
-	while((res = read(fd, buf + _read, len - _read)) != -1 && res && (_read += res) < len);
+	ssize_t _read = 0;
+	ssize_t res;
+	while((res = read(fd, (char*)buf + _read, len - (size_t)_read)) != -1 && res > 0 && (size_t)(_read += res) < len);
 	return res == -1 ? -1 : _read;
 }
 
 static char *readString(int fd) {
-	int res;
+	ssize_t res;
 	size_t _read = 0;
 	char c;
 	char *dstbuf = (char *)malloc(1);

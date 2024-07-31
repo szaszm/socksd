@@ -7,11 +7,11 @@ enum SOCKS_STATE { STATE_INITIAL_WAIT, STATE_REQUEST_WAIT, STATE_PROXIED };
 struct Client {
 	int client_fd;
 	int remote_fd;
-	int version;
+	unsigned char version;
 	enum SOCKS_STATE state;
 	struct sockaddr_storage dst;
 	const struct Logger *logger;
-	char socks5_method;
+	unsigned char socks5_method;
 	int af_restriction;
 };
 

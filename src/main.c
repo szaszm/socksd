@@ -55,7 +55,7 @@ static int terminate = 0; // signal terminator var
 
 int main(int argc, char *argv[]) {
 	struct MainContext ctx = {
-		.logger = Logger_init(LOG_LEVEL_VERBOSE),
+		.logger = Logger_init(LOG_LEVEL_INFO),
 		.bindhost = "",
 		.bindport = "1080",
 		.clients = NULL,
@@ -131,8 +131,8 @@ int main(int argc, char *argv[]) {
 		fds = getPollFds(&ctx, &fds_len);
 		res = poll(fds, fds_len, -1);
 		if(res == -1) { Logger_perror(&ctx.logger, LOG_LEVEL_WARNING, "poll"); continue; }
-		else if(res == 0) { Logger_debug(&ctx.logger, "poll", "poll timeout"); continue; }
-		else Logger_debug(&ctx.logger, "poll", "poll activity.");
+		if(res == 0) { Logger_debug(&ctx.logger, "poll", "poll timeout"); continue; }
+		Logger_debug(&ctx.logger, "poll", "poll activity.");
 		nfds_t i;
 		for(i = 0; i < fds_len; ++i) {
 			if(fds[i].revents == 0) continue;
@@ -180,10 +180,10 @@ int main(int argc, char *argv[]) {
 					Logger_warn(&ctx.logger, "event_loop", "Client already closed.");
 					continue;
 				}
-				int res[2] = {0,0};
-				if(c->client_fd == fds[i].fd) res[0] = Client_handleActivity(c);
-				if(c->remote_fd == fds[i].fd) res[1] = Client_handleRemoteActivity(c);
-				if(res[0] || res[1]) 
+				int conn_res[2] = {0,0};
+				if(c->client_fd == fds[i].fd) conn_res[0] = Client_handleActivity(c);
+				if(c->remote_fd == fds[i].fd) conn_res[1] = Client_handleRemoteActivity(c);
+				if(conn_res[0] || conn_res[1])
 				{
 					Client_close(c);
 					continue;
