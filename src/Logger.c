@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <errno.h> // errno
 #include <string.h> // strerror
+#include <stdarg.h> // va_start, va_end, vs_list
 
 #ifdef ARRAY_LENGTH
 #undef ARRAY_LENGTH
