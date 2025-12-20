@@ -11,6 +11,9 @@
 
 #define REQUEST_CONNECT 1
 
+#define LOCAL_BIND_ADDR "192.168.0.102"
+#define LOCAL_BIND_ADDR_AF AF_INET
+
 static const char *const SOCKS5_METHODS[] = {
 	"CONNECT",
 	"BIND",
@@ -144,7 +147,7 @@ static int Client_handleSocks4Request(struct Client *client) {
 
 	char addrstr[INET6_ADDRSTRLEN];
 	inet_ntop(client->dst.ss_family, (client->dst.ss_family == AF_INET6) 
-			? (void *)&((struct sockaddr_in6 *)&client->dst)->sin6_addr.s6_addr 
+			? (void *)&((struct sockaddr_in6 *)&client->dst)->sin6_addr.s6_addr
 			: (void *)&addr->sin_addr.s_addr, 
 			addrstr, INET6_ADDRSTRLEN);
 	unsigned short port = ntohs(addr->sin_port);
@@ -187,6 +190,27 @@ static int Client_startForwarding(struct Client *client) {
 		Logger_perror(client->logger, LOG_LEVEL_WARNING, "socket");
 		return 1;
 	}
+
+#ifdef LOCAL_BIND_ADDR
+	struct sockaddr_storage bind_addr_stor;
+	memset(&bind_addr_stor, 0, sizeof(bind_addr_stor));
+	const int pton_result = inet_pton(LOCAL_BIND_ADDR_AF, LOCAL_BIND_ADDR,
+			LOCAL_BIND_ADDR_AF == AF_INET6
+			? (void *)&((struct sockaddr_in6 *)&bind_addr_stor)->sin6_addr.s6_addr
+			: (void *)&((struct sockaddr_in *)&bind_addr_stor)->sin_addr.s_addr);
+	if (pton_result == 0) {
+		Logger_error(client->logger, "Client_startForwarding", "failed to bind before connect");
+		return 1;
+	} else if (pton_result < 0) {
+		Logger_perror(client->logger, LOG_LEVEL_ERROR, "inet_pton");
+		return 1;
+	}
+	if (bind(client->remote_fd, (struct sockaddr*)&bind_addr_stor, LOCAL_BIND_ADDR_AF == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in)) == -1) {
+		Logger_perror(client->logger, LOG_LEVEL_ERROR, "bind");
+		return 1;
+	}
+#endif  // LOCAL_BIND_ADDR
+
 	socklen_t len = (client->dst.ss_family == AF_INET6) ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
 	int res = connect(client->remote_fd, (struct sockaddr *)&client->dst, len);
 	if(res == -1) {
